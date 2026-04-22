@@ -1,0 +1,27 @@
+# Dépendances
+node_modules/
+
+# Build
+dist/
+
+# Environnement
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+/tmp/
+
+# Éditeurs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
