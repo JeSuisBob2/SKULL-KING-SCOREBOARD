@@ -13,6 +13,8 @@ export interface RoomPlayer {
   name: string;
   isHost: boolean;
   managedByHost?: boolean;
+  surrendered?: boolean;
+  surrenderedAt?: string;
 }
 
 export interface RoomRow {

@@ -324,6 +324,10 @@ function handleMessage(ws: any, raw: string) {
         if (room.host_player_id !== playerId) return;
         const target = room.players.find(p => p.id === targetId);
         if (!target?.managedByHost) return;
+        if (target.surrendered) return;
+      } else {
+        const me = room.players.find(p => p.id === playerId);
+        if (me?.surrendered) return;
       }
 
       const bids = roomBids.get(code)!;
@@ -365,6 +369,10 @@ function handleMessage(ws: any, raw: string) {
         if (room.host_player_id !== playerId) return;
         const target = room.players.find(p => p.id === targetId);
         if (!target?.managedByHost) return;
+        if (target.surrendered) return;
+      } else {
+        const me = room.players.find(p => p.id === playerId);
+        if (me?.surrendered) return;
       }
 
       const bids = roomBids.get(code)!;
@@ -378,7 +386,7 @@ function handleMessage(ws: any, raw: string) {
       // Auto-reveal when all players are ready
       const currentBids = bids.filter(b => b.round_number === room.current_round);
       const allReady = room.players.every(
-        p => currentBids.find(b => b.player_id === p.id)?.is_ready
+        p => p.surrendered || currentBids.find(b => b.player_id === p.id)?.is_ready
       );
       if (allReady) {
         room.status = 'revealing';
@@ -469,6 +477,10 @@ function handleMessage(ws: any, raw: string) {
         if (room.host_player_id !== playerId) return;
         const target = room.players.find(p => p.id === targetId);
         if (!target?.managedByHost) return;
+        if (target.surrendered) return;
+      } else {
+        const me = room.players.find(p => p.id === playerId);
+        if (me?.surrendered) return;
       }
 
       const results = roomResults.get(code)!;
@@ -561,6 +573,10 @@ function handleMessage(ws: any, raw: string) {
         if (room.host_player_id !== playerId) return;
         const target = room.players.find(p => p.id === targetId);
         if (!target?.managedByHost) return;
+        if (target.surrendered) return;
+      } else {
+        const me = room.players.find(p => p.id === playerId);
+        if (me?.surrendered) return;
       }
 
       const results = roomResults.get(code)!;
@@ -573,7 +589,7 @@ function handleMessage(ws: any, raw: string) {
       // Auto-complete round when all players are done
       const currentResults = results.filter(r => r.round_number === room.current_round);
       const allDone = room.players.every(
-        p => currentResults.find(r => r.player_id === p.id)?.is_done
+        p => p.surrendered || currentResults.find(r => r.player_id === p.id)?.is_done
       );
       if (allDone) {
         room.status = 'round-complete';
@@ -697,6 +713,126 @@ function handleMessage(ws: any, raw: string) {
       room.status = 'complete';
       room.updated_at = now();
       log(`[room] ${code} terminée`);
+      broadcastState(code);
+      break;
+    }
+
+    // ── Host transfers their role to another player ──────────────────────────
+    case 'transfer-host': {
+      const code = playerToRoom.get(playerId);
+      if (!code) return;
+      const room = rooms.get(code);
+      if (!room || room.host_player_id !== playerId) return;
+
+      const targetId = msg.targetPlayerId as string;
+      if (!targetId || targetId === playerId) { sendError(ws, 'Cible invalide'); return; }
+      const target = room.players.find(p => p.id === targetId);
+      if (!target) { sendError(ws, 'Joueur introuvable'); return; }
+      if (target.surrendered) { sendError(ws, 'Impossible : ce joueur a abandonné'); return; }
+      if (target.managedByHost) { sendError(ws, 'Impossible : joueur géré par l\'hôte'); return; }
+
+      // Update host references
+      room.host_player_id = targetId;
+      for (const p of room.players) {
+        p.isHost = (p.id === targetId);
+      }
+      room.updated_at = now();
+      log(`[room] ${code} hôte transféré : ${playerId} → ${targetId}`);
+      broadcastState(code);
+      break;
+    }
+
+    // ── Player surrenders (leaves game but keeps score history) ──────────────
+    case 'surrender': {
+      const code = playerToRoom.get(playerId);
+      if (!code) return;
+      const room = rooms.get(code);
+      if (!room) return;
+
+      // Surrender only makes sense during an active game, not in lobby
+      if (room.status === 'lobby') { sendError(ws, 'Utilisez "Quitter" en lobby'); return; }
+
+      // Host can surrender a managed player on their behalf
+      const targetId: string = msg.targetPlayerId ?? playerId;
+      const isManagedSurrender = targetId !== playerId;
+      if (isManagedSurrender) {
+        if (room.host_player_id !== playerId) { sendError(ws, 'Non autorisé'); return; }
+        const target = room.players.find(p => p.id === targetId);
+        if (!target?.managedByHost) { sendError(ws, 'Joueur invalide'); return; }
+      }
+
+      const me = room.players.find(p => p.id === targetId);
+      if (!me) return;
+      if (me.surrendered) return; // already surrendered
+
+      const targetIsHost = room.host_player_id === targetId;
+
+      // If the host is surrendering themselves: must transfer the role first
+      if (targetIsHost) {
+        const newHostId = msg.newHostId as string | undefined;
+        const candidates = room.players.filter(p => p.id !== targetId && !p.surrendered && !p.managedByHost);
+
+        if (candidates.length === 0) {
+          // No one to transfer to → delete the room entirely
+          for (const p of room.players) {
+            sendTo(p.id, { type: 'room-deleted' });
+            playerToRoom.delete(p.id);
+            playerToWs.delete(p.id);
+          }
+          rooms.delete(code);
+          roomBids.delete(code);
+          roomResults.delete(code);
+          roomShameLog.delete(code);
+          log(`[room] ${code} supprimée (hôte abandonne sans successeur)`);
+          break;
+        }
+
+        if (!newHostId) { sendError(ws, 'Choisissez un nouvel hôte'); return; }
+        const newHost = room.players.find(p => p.id === newHostId);
+        if (!newHost || newHost.surrendered || newHost.managedByHost || newHost.id === targetId) {
+          sendError(ws, 'Nouvel hôte invalide'); return;
+        }
+
+        // Transfer host
+        room.host_player_id = newHostId;
+        for (const p of room.players) p.isHost = (p.id === newHostId);
+        log(`[room] ${code} hôte transféré (avant abandon) : ${targetId} → ${newHostId}`);
+      }
+
+      // Mark as surrendered (keep in players list to preserve score history)
+      me.surrendered = true;
+      me.surrenderedAt = now();
+
+      // For self-surrender (not managed): disconnect player from the room
+      if (!isManagedSurrender) {
+        playerToRoom.delete(targetId);
+        playerToWs.delete(targetId);
+        // Notify the surrendering player so their UI redirects home
+        sendTo(targetId, { type: 'surrendered' });
+      }
+
+      room.updated_at = now();
+      log(`[room] ${code} ${targetId} a abandonné${isManagedSurrender ? ' (par hôte)' : ''}`);
+
+      // Auto-advance phase if remaining players are now all ready/done
+      const activePlayers = room.players.filter(p => !p.surrendered);
+
+      if (room.status === 'bidding') {
+        const currentBids = (roomBids.get(code) ?? []).filter(b => b.round_number === room.current_round);
+        const allReady = activePlayers.every(p => currentBids.find(b => b.player_id === p.id)?.is_ready);
+        if (allReady && activePlayers.length > 0) {
+          room.status = 'revealing';
+          log(`[room] ${code} manche ${room.current_round} — révélation auto (abandon)`);
+        }
+      } else if (room.status === 'scoring') {
+        const currentResults = (roomResults.get(code) ?? []).filter(r => r.round_number === room.current_round);
+        const allDone = activePlayers.every(p => currentResults.find(r => r.player_id === p.id)?.is_done);
+        if (allDone && activePlayers.length > 0) {
+          room.status = 'round-complete';
+          log(`[room] ${code} manche ${room.current_round} terminée auto (abandon)`);
+        }
+      }
+
       broadcastState(code);
       break;
     }

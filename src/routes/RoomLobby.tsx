@@ -1,13 +1,15 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import Layout from '../components/Layout';
 import QRCodeDisplay from '../components/QRCodeDisplay';
+import TransferHostDialog from '../components/TransferHostDialog';
 import { useRoomStore } from '../store/useRoomStore';
 
 export default function RoomLobby() {
   const nav = useNavigate();
   const { roomId } = useParams();
-  const { room, myPlayerId, kicked, startGame, shufflePlayers, kickPlayer, subscribeToRoom, unsubscribeFromRoom, clearRoom } = useRoomStore();
+  const { room, myPlayerId, kicked, startGame, shufflePlayers, kickPlayer, subscribeToRoom, unsubscribeFromRoom, clearRoom, transferHost } = useRoomStore();
+  const [transferOpen, setTransferOpen] = useState(false);
 
   const isHost = room?.host_player_id === myPlayerId;
   const joinUrl = `${window.location.origin}${import.meta.env.BASE_URL}join/${room?.code ?? ''}`;
@@ -109,6 +111,14 @@ export default function RoomLobby() {
             {room.players.length < 2 && (
               <p className="text-xs opacity-60 text-center">En attente d'au moins 2 joueurs...</p>
             )}
+            {room.players.filter(p => !p.isHost && !p.managedByHost).length > 0 && (
+              <button
+                className="btn btn-ghost w-full text-sm"
+                onClick={() => setTransferOpen(true)}
+              >
+                👑 Transférer l'hôte
+              </button>
+            )}
           </div>
         ) : (
           <div className="card p-4 text-center opacity-70">
@@ -117,9 +127,20 @@ export default function RoomLobby() {
         )}
 
         <button className="btn btn-ghost w-full text-sm" onClick={handleLeave}>
-          Quitter la salle
+          {isHost ? 'Quitter et fermer la salle' : 'Quitter la salle'}
         </button>
       </div>
+
+      <TransferHostDialog
+        open={transferOpen}
+        myPlayerId={myPlayerId}
+        players={room.players}
+        onClose={() => setTransferOpen(false)}
+        onConfirm={(newHostId) => {
+          transferHost(newHostId);
+          setTransferOpen(false);
+        }}
+      />
     </Layout>
   );
 }

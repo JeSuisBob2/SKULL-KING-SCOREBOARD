@@ -60,6 +60,9 @@ interface RoomState {
   setScore: (targetPlayerId: string, roundNumber: number, score: number, tricks?: number, harryAdjustment?: number) => void;
   shamePenalty: (targetPlayerId: string, amount: -10 | -20) => void;
   removeShame: (entryId: string) => void;
+  surrender: (newHostId?: string) => void;
+  surrenderManaged: (targetPlayerId: string) => void;
+  transferHost: (targetPlayerId: string) => void;
   deleteRoom: () => void;
   subscribeToRoom: (roomId: string) => void;
   unsubscribeFromRoom: () => void;
@@ -125,9 +128,20 @@ export const useRoomStore = create<RoomState>((set, get) => {
     set({ room: null, bids: [], results: [], shameLog: [], error: null, kicked: true });
   });
 
-  // NOTE: on n'envoie plus reconnect automatiquement au connect
-  // pour éviter que des états périmés écrasent une nouvelle salle en cours de création.
-  // Le reconnect est envoyé explicitement depuis subscribeToRoom().
+  wsClient.on('surrendered', () => {
+    wsClient.disconnect();
+    localStorage.removeItem('skullking-active-room');
+    set({ room: null, bids: [], results: [], shameLog: [], error: null });
+  });
+
+  // Auto-reconnect si une room active existe dans localStorage
+  // (permet de rester dans la partie au refresh)
+  wsClient.on('_connected', () => {
+    const activeCode = localStorage.getItem('skullking-active-room');
+    if (activeCode && !get().room) {
+      wsClient.send({ type: 'reconnect', playerId: getOrCreatePlayerId() });
+    }
+  });
 
   function ensureConnected() {
     if (!wsClient.connected) {
@@ -343,6 +357,20 @@ export const useRoomStore = create<RoomState>((set, get) => {
 
     removeShame(entryId) {
       wsClient.send({ type: 'remove-shame', playerId: get().myPlayerId, entryId });
+    },
+
+    surrender(newHostId?: string) {
+      const payload: any = { type: 'surrender', playerId: get().myPlayerId };
+      if (newHostId) payload.newHostId = newHostId;
+      wsClient.send(payload);
+    },
+
+    surrenderManaged(targetPlayerId: string) {
+      wsClient.send({ type: 'surrender', playerId: get().myPlayerId, targetPlayerId });
+    },
+
+    transferHost(targetPlayerId: string) {
+      wsClient.send({ type: 'transfer-host', playerId: get().myPlayerId, targetPlayerId });
     },
 
     deleteRoom() {

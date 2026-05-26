@@ -100,11 +100,6 @@ export default function BotWidget() {
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // N'affiche le bot que si on est dans une room active
-  const currentRound = room?.current_round ?? 1;
-  const isInRoom = !!room;
-  if (!isInRoom) return null;
-
   // Scroll auto
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -126,6 +121,10 @@ export default function BotWidget() {
   useEffect(() => {
     saveHistory(messages);
   }, [messages]);
+
+  // N'affiche le bot que si on est dans une room active
+  const currentRound = room?.current_round ?? 1;
+  if (!room) return null;
 
   const ctx = buildContext(room, results, bids, shameLog, myPlayerId, currentRound);
 

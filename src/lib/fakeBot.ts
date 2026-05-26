@@ -391,6 +391,34 @@ export async function generateTextReply(
 
   const msg = userMessage.toLowerCase();
 
+  // Salutations
+  if (
+    msg.match(/\b(bonjour|bonsoir|salut|coucou|hello|hey|hi|yo|wesh|allo|allô|ohhh|ohé|hé|hep)\b/) ||
+    msg === 'slt' || msg === 'bjr' || msg === 'cc'
+  ) {
+    return pick([
+      `🏴‍☠️ Ahoy matelot ! Prêt à défier les flots ce soir ?`,
+      `🏴‍☠️ Salut ! Le Capitaine Bid est à ton service. Pose-moi une question ou envoie ta main en photo !`,
+      `🏴‍☠️ Bonjour moussaillon. Je t'attendais. Tu as besoin de conseils ?`,
+      `🏴‍☠️ Hey ! Tu arrives enfin. Bon, montre-moi ta main qu'on s'active.`,
+      `🏴‍☠️ Ah, un visiteur ! Bienvenue à bord, matelot. On joue ou on bavarde ?`,
+      `🏴‍☠️ Salut à toi ! Mon rhum est chaud et mes conseils sont gratuits. Qu'est-ce qu'il te faut ?`,
+      `🏴‍☠️ Ohé ! C'est le Capitaine Bid. Tu tombes bien, j'avais rien à faire.`,
+      `🏴‍☠️ Bonjour ! Tu veux un conseil pour cette manche ou tu passes juste dire bonjour ?`,
+    ]);
+  }
+
+  // Remerciements
+  if (msg.match(/\b(merci|thanks|thx|ty|thank|sympa|cool|nickel|parfait|super|génial|trop bien|top)\b/)) {
+    return pick([
+      `🏴‍☠️ De rien, moussaillon. C'est pour ça que je suis là.`,
+      `🏴‍☠️ Avec plaisir ! Maintenant va gagner cette manche.`,
+      `🏴‍☠️ Haha, t'as vu ça, même le Capitaine peut être utile.`,
+      `🏴‍☠️ Pas de quoi. Maintenant arrête de me remercier et joue !`,
+      `🏴‍☠️ C'est normal. Je suis le meilleur conseiller des sept mers.`,
+    ]);
+  }
+
   // Questions fréquentes détectées par mots-clés
   if (msg.includes('skull king') || msg.includes('sk')) {
     return pick([

@@ -126,8 +126,9 @@ export default function ScoreOverview({ room, results, bids, shameLog, myPlayerI
               <tr>
                 <th className="text-left opacity-50 font-normal pb-2 pr-2 text-xs"></th>
                 {room.players.map(p => (
-                  <th key={p.id} className={`pb-2 font-semibold text-xs px-1 whitespace-nowrap ${p.id === myPlayerId ? 'text-accent' : ''}`}>
-                    {p.name}
+                  <th key={p.id} className={`pb-2 font-semibold text-xs px-1 whitespace-nowrap ${p.id === myPlayerId ? 'text-accent' : ''} ${p.surrendered ? 'opacity-50' : ''}`}>
+                    <span className={p.surrendered ? 'line-through' : ''}>{p.name}</span>
+                    {p.surrendered && <span className="block text-[10px] italic text-red-300 no-underline opacity-100">🏳️ abandon</span>}
                   </th>
                 ))}
                 {isHost && <th className="pb-2"></th>}

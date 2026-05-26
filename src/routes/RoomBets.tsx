@@ -6,6 +6,7 @@ import ScoreChip from '../components/ScoreChip';
 import { useRoomStore } from '../store/useRoomStore';
 import ScoreOverview from '../components/ScoreOverview';
 import ShameBag from '../components/ShameBag';
+import SurrenderDialog from '../components/SurrenderDialog';
 
 const formatTime = (iso: string | null) => {
   if (!iso) return null;
@@ -21,7 +22,9 @@ export default function RoomBets() {
     submitBid, markBidReady, advanceToScoring,
     submitBidForPlayer, markBidReadyForPlayer,
     resetMyBid, resetBids, resetBidForPlayer, shamePenalty, removeShame, shameLog,
+    surrender,
   } = useRoomStore();
+  const [surrenderOpen, setSurrenderOpen] = useState(false);
 
   const rNum = Number(roundNumber || 1);
   const isHost = room?.host_player_id === myPlayerId;
@@ -112,9 +115,13 @@ export default function RoomBets() {
     if (kicked) nav('/', { replace: true });
   }, [kicked]);
 
+  const activePlayers = room?.players.filter(p => !p.surrendered) ?? [];
   const currentRoundBids = bids.filter(b => b.round_number === rNum);
-  const readyCount = currentRoundBids.filter(b => b.is_ready).length;
-  const totalPlayers = room?.players.length ?? 0;
+  const readyCount = currentRoundBids.filter(b => {
+    const player = room?.players.find(p => p.id === b.player_id);
+    return b.is_ready && !player?.surrendered;
+  }).length;
+  const totalPlayers = activePlayers.length;
   const allReady = readyCount >= totalPlayers && totalPlayers > 0;
 
   const cumulativeScores = useMemo(() => {
@@ -145,10 +152,24 @@ export default function RoomBets() {
 
   if (!room) return null;
   const isRevealing = room.status === 'revealing';
-  const firstPlayer = room.players[(rNum - 1) % room.players.length];
+  const firstPlayer = activePlayers[(rNum - 1) % Math.max(activePlayers.length, 1)];
+  const meSurrendered = room.players.find(p => p.id === myPlayerId)?.surrendered;
 
   return (
-    <Layout title={`Paris · Manche ${rNum}/${room.total_rounds}`}>
+    <Layout
+      title={`Paris · Manche ${rNum}/${room.total_rounds}`}
+      right={
+        !meSurrendered && (
+          <button
+            className="text-base opacity-60 hover:opacity-100 transition-opacity"
+            onClick={() => setSurrenderOpen(true)}
+            title="Abandonner la partie"
+          >
+            🏳️
+          </button>
+        )
+      }
+    >
       <div className="space-y-4">
 
         {/* Who starts this round */}
@@ -170,8 +191,11 @@ export default function RoomBets() {
             {showStandings && (
               <ul className="mt-2 space-y-1">
                 {standings.map(({ player, total }, i) => (
-                  <li key={player.id} className="flex items-center justify-between text-sm">
-                    <span>{['👑', '🏴‍☠️', '🧜‍♀️', '👶'][i] ?? `${i + 1}.`} {player.name}</span>
+                  <li key={player.id} className={`flex items-center justify-between text-sm ${player.surrendered ? 'opacity-50' : ''}`}>
+                    <span className={player.surrendered ? 'line-through' : ''}>
+                      {['👑', '🏴‍☠️', '🧜‍♀️', '👶'][i] ?? `${i + 1}.`} {player.name}
+                      {player.surrendered && <span className="ml-2 text-xs italic text-red-300 no-underline">🏳️</span>}
+                    </span>
                     <span className="font-semibold text-white">{total}</span>
                   </li>
                 ))}
@@ -180,8 +204,8 @@ export default function RoomBets() {
           </div>
         )}
 
-        {/* Score history overview — hôte uniquement */}
-        {rNum > 5 && <ScoreOverview room={room} results={results} bids={bids} shameLog={shameLog} myPlayerId={myPlayerId} isHost={isHost} />}
+        {/* Score history overview — visible dès la manche 1 */}
+        <ScoreOverview room={room} results={results} bids={bids} shameLog={shameLog} myPlayerId={myPlayerId} isHost={isHost} />
 
         {/* Ready status bar */}
         <div className="card p-3 flex items-center justify-between">
@@ -202,7 +226,7 @@ export default function RoomBets() {
         </div>
 
         {/* My bid input */}
-        {!submitted && !isRevealing && (
+        {!submitted && !isRevealing && !meSurrendered && (
           <div className="card p-4 space-y-4">
             <div className="section-title">Mon pari — Manche {rNum}</div>
 
@@ -217,7 +241,7 @@ export default function RoomBets() {
           </div>
         )}
 
-        {submitted && !isRevealing && (
+        {submitted && !isRevealing && !meSurrendered && (
           <div className="card p-4 text-center">
             <div className="text-4xl mb-2">⏳</div>
             <p className="font-semibold">En attente des autres joueurs...</p>
@@ -246,7 +270,7 @@ export default function RoomBets() {
         )}
 
         {/* Managed players bids (host only) */}
-        {isHost && !isRevealing && room.players.filter(p => p.managedByHost).map(p => {
+        {isHost && !isRevealing && room.players.filter(p => p.managedByHost && !p.surrendered).map(p => {
           const bid = managedBids[p.id] ?? 0;
           const harry = managedHarry[p.id] ?? 0;
           const isReady = managedSubmitted[p.id] ?? false;
@@ -303,7 +327,7 @@ export default function RoomBets() {
                 </div>
               );
             })()}
-            {room.players.map(p => {
+            {activePlayers.map(p => {
               const bid = currentRoundBids.find(b => b.player_id === p.id);
               const isFirst = p.id === firstPlayer?.id;
               return (
@@ -354,6 +378,14 @@ export default function RoomBets() {
           <ul className="space-y-1">
             {room.players.map(p => {
               const bid = currentRoundBids.find(b => b.player_id === p.id);
+              if (p.surrendered) {
+                return (
+                  <li key={p.id} className="flex items-center justify-between text-sm opacity-40">
+                    <span className="line-through">{p.name}</span>
+                    <span className="text-xs italic text-red-300">🏳️ Abandonné</span>
+                  </li>
+                );
+              }
               return (
                 <li key={p.id} className="flex items-center justify-between text-sm">
                   <span>{p.name}</span>
@@ -377,6 +409,18 @@ export default function RoomBets() {
         </div>
 
       </div>
+
+      <SurrenderDialog
+        open={surrenderOpen}
+        isHost={isHost}
+        myPlayerId={myPlayerId}
+        players={room.players}
+        onClose={() => setSurrenderOpen(false)}
+        onConfirm={(newHostId) => {
+          surrender(newHostId);
+          setSurrenderOpen(false);
+        }}
+      />
     </Layout>
   );
 }
