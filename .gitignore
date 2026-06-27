@@ -13,6 +13,10 @@ dist/
 *.log
 /tmp/
 
+# Sauvegarde des parties (persistance serveur)
+skullking-save.json
+skullking-save.json.tmp
+
 # Éditeurs
 .vscode/
 .idea/

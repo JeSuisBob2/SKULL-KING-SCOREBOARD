@@ -1,8 +1,6 @@
 import { Link } from 'react-router-dom';
 import { ReactNode, useState } from 'react';
 import RulesDrawer from './RulesDrawer';
-import BotWidget from './BotWidget';
-import ErrorBoundary from './ErrorBoundary';
 
 interface LayoutProps {
   title: string;
@@ -38,7 +36,6 @@ export default function Layout({ title, right, children }: LayoutProps) {
       <main className="flex-1 container py-4">{children}</main>
 
       <RulesDrawer open={rulesOpen} onClose={() => setRulesOpen(false)} />
-      <ErrorBoundary><BotWidget /></ErrorBoundary>
     </div>
   );
 }

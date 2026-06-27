@@ -3,6 +3,7 @@
 // Sert les fichiers statiques (dist/) ET gère les WebSockets sur le même port.
 
 import { networkInterfaces } from 'os';
+import { writeFileSync, renameSync, readFileSync, existsSync } from 'fs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +76,59 @@ function generateCode(): string {
   return rooms.has(code) ? generateCode() : code;
 }
 
+// ─── Persistance disque (survie à un redémarrage / coupure de courant) ─────────
+// On sauvegarde uniquement les DONNÉES de jeu. Les sockets (playerToWs) sont
+// volontairement exclues : une connexion WebSocket ne survit pas à un redémarrage,
+// les joueurs se reconnectent d'eux-mêmes (message 'reconnect').
+
+const SNAPSHOT_FILE = process.env.SK_SAVE_FILE ?? './skullking-save.json';
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Écrit l'état de jeu sur le disque, de façon atomique (.tmp puis renommage). */
+function saveSnapshot() {
+  try {
+    const snapshot = {
+      version: 1,
+      savedAt: now(),
+      rooms:        [...rooms.entries()],
+      roomBids:     [...roomBids.entries()],
+      roomResults:  [...roomResults.entries()],
+      roomShameLog: [...roomShameLog.entries()],
+      playerToRoom: [...playerToRoom.entries()],
+    };
+    const tmp = SNAPSHOT_FILE + '.tmp';
+    writeFileSync(tmp, JSON.stringify(snapshot));
+    renameSync(tmp, SNAPSHOT_FILE); // renommage atomique : jamais de fichier à moitié écrit
+  } catch (e) {
+    log('[save] échec de la sauvegarde :', e);
+  }
+}
+
+/** Sauvegarde différée : les changements rapprochés sont regroupés en une seule écriture. */
+function scheduleSave() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => { saveTimer = null; saveSnapshot(); }, 800);
+}
+
+/** Au démarrage : recharge la dernière sauvegarde si elle existe. */
+function loadSnapshot() {
+  try {
+    if (!existsSync(SNAPSHOT_FILE)) {
+      log('[load] aucune sauvegarde — démarrage à vide');
+      return;
+    }
+    const snap = JSON.parse(readFileSync(SNAPSHOT_FILE, 'utf8'));
+    for (const [k, v] of snap.rooms ?? [])        rooms.set(k, v);
+    for (const [k, v] of snap.roomBids ?? [])     roomBids.set(k, v);
+    for (const [k, v] of snap.roomResults ?? [])  roomResults.set(k, v);
+    for (const [k, v] of snap.roomShameLog ?? []) roomShameLog.set(k, v);
+    for (const [k, v] of snap.playerToRoom ?? []) playerToRoom.set(k, v);
+    log(`[load] sauvegarde du ${snap.savedAt ?? '?'} rechargée : ${rooms.size} salle(s)`);
+  } catch (e) {
+    log('[load] sauvegarde illisible, démarrage à vide :', e);
+  }
+}
+
 function sendTo(playerId: string, msg: unknown) {
   const ws = playerToWs.get(playerId);
   if (!ws) return;
@@ -112,6 +166,9 @@ function broadcastState(roomCode: string) {
     const shameLog = roomShameLog.get(roomCode) ?? [];
     sendTo(player.id, { type: 'state', room, bids: filteredBids, results, shameLog });
   }
+
+  // L'état du jeu vient de changer → on programme une sauvegarde sur disque.
+  scheduleSave();
 }
 
 // ─── Message handler ──────────────────────────────────────────────────────────
@@ -164,6 +221,7 @@ function handleMessage(ws: any, raw: string) {
         roomBids.delete(code);
         roomResults.delete(code);
       roomShameLog.delete(code);
+        scheduleSave();
         log(`[room] ${code} supprimée automatiquement après 12h`);
       }, 12 * 60 * 60 * 1000);
 
@@ -242,6 +300,7 @@ function handleMessage(ws: any, raw: string) {
         roomBids.delete(code);
         roomResults.delete(code);
       roomShameLog.delete(code);
+        scheduleSave();
         log(`[room] ${code} supprimée (hôte/dernier joueur parti)`);
       } else {
         // Otherwise broadcast updated player list
@@ -783,6 +842,7 @@ function handleMessage(ws: any, raw: string) {
           roomBids.delete(code);
           roomResults.delete(code);
           roomShameLog.delete(code);
+          scheduleSave();
           log(`[room] ${code} supprimée (hôte abandonne sans successeur)`);
           break;
         }
@@ -855,6 +915,7 @@ function handleMessage(ws: any, raw: string) {
       roomBids.delete(code);
       roomResults.delete(code);
       roomShameLog.delete(code);
+      scheduleSave();
       log(`[room] ${code} supprimée`);
       break;
     }
@@ -883,6 +944,9 @@ async function detectBase(): Promise<string> {
 
 const BASE = await detectBase();
 if (BASE) log(`[server] base détectée : "${BASE}"`);
+
+// Recharge les parties en cours depuis le disque (reprise après coupure/redémarrage).
+loadSnapshot();
 
 Bun.serve({
   port: PORT,
@@ -933,6 +997,7 @@ Bun.serve({
           roomBids.delete(code);
           roomResults.delete(code);
       roomShameLog.delete(code);
+          scheduleSave();
           deleted++;
         }
       }
@@ -1040,6 +1105,7 @@ Bun.serve({
                   roomBids.delete(code);
                   roomResults.delete(code);
       roomShameLog.delete(code);
+                  scheduleSave();
                   log(`[room] ${code} supprimée (inactivité)`);
                 }
               }, grace);
