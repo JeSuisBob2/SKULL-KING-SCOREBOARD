@@ -63,6 +63,7 @@ interface RoomState {
   surrender: (newHostId?: string) => void;
   surrenderManaged: (targetPlayerId: string) => void;
   transferHost: (targetPlayerId: string) => void;
+  takeControl: (targetPlayerId: string) => void;
   deleteRoom: () => void;
   subscribeToRoom: (roomId: string) => void;
   unsubscribeFromRoom: () => void;
@@ -134,14 +135,22 @@ export const useRoomStore = create<RoomState>((set, get) => {
     set({ room: null, bids: [], results: [], shameLog: [], error: null });
   });
 
-  // Auto-reconnect si une room active existe dans localStorage
-  // (permet de rester dans la partie au refresh)
-  wsClient.on('_connected', () => {
+  // Resynchronisation complète de l'état depuis le serveur.
+  // Toujours resynchroniser (même si `room` est déjà rempli) : après une mise en
+  // veille du téléphone, l'état local peut être périmé (page/manche en retard).
+  function resyncFromServer() {
     const activeCode = localStorage.getItem('skullking-active-room');
-    if (activeCode && !get().room) {
+    if (activeCode) {
       wsClient.send({ type: 'reconnect', playerId: getOrCreatePlayerId() });
     }
-  });
+  }
+
+  // Auto-reconnect si une room active existe dans localStorage
+  // (permet de rester dans la partie au refresh ET de rattraper l'état raté)
+  wsClient.on('_connected', resyncFromServer);
+
+  // Retour au premier plan (déverrouillage tel) → rattraper les broadcasts ratés
+  wsClient.on('_resync', resyncFromServer);
 
   function ensureConnected() {
     if (!wsClient.connected) {
@@ -373,6 +382,10 @@ export const useRoomStore = create<RoomState>((set, get) => {
       wsClient.send({ type: 'transfer-host', playerId: get().myPlayerId, targetPlayerId });
     },
 
+    takeControl(targetPlayerId: string) {
+      wsClient.send({ type: 'take-control', playerId: get().myPlayerId, targetPlayerId });
+    },
+
     deleteRoom() {
       wsClient.send({ type: 'delete-room', playerId: get().myPlayerId });
     },
@@ -382,7 +395,10 @@ export const useRoomStore = create<RoomState>((set, get) => {
       // Envoie reconnect uniquement ici, pas au connect automatique
       const send = () => wsClient.send({ type: 'reconnect', playerId: get().myPlayerId });
       if (wsClient.connected) send();
-      else wsClient.on('_connected', () => send());
+      else {
+        // handler à usage unique (évite d'accumuler un handler par montage de page)
+        const off = wsClient.on('_connected', () => { send(); off(); });
+      }
     },
 
     unsubscribeFromRoom() {

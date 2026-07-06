@@ -12,6 +12,9 @@ interface RoomPlayer {
   name: string;
   isHost: boolean;
   managedByHost?: boolean;
+  autoManaged?: boolean;   // contrôle pris par l'hôte suite à une déconnexion (rendu au retour)
+  surrendered?: boolean;
+  surrenderedAt?: string;
 }
 
 interface Room {
@@ -123,6 +126,12 @@ function loadSnapshot() {
     for (const [k, v] of snap.roomResults ?? [])  roomResults.set(k, v);
     for (const [k, v] of snap.roomShameLog ?? []) roomShameLog.set(k, v);
     for (const [k, v] of snap.playerToRoom ?? []) playerToRoom.set(k, v);
+    // Garantit que chaque salle a ses structures annexes (évite tout crash sur .get(code)!)
+    for (const code of rooms.keys()) {
+      if (!roomBids.has(code))     roomBids.set(code, []);
+      if (!roomResults.has(code))  roomResults.set(code, []);
+      if (!roomShameLog.has(code)) roomShameLog.set(code, []);
+    }
     log(`[load] sauvegarde du ${snap.savedAt ?? '?'} rechargée : ${rooms.size} salle(s)`);
   } catch (e) {
     log('[load] sauvegarde illisible, démarrage à vide :', e);
@@ -151,6 +160,12 @@ function broadcastState(roomCode: string) {
   const bids    = roomBids.get(roomCode)    ?? [];
   const results = roomResults.get(roomCode) ?? [];
 
+  // Expose per-player connection status (l'hôte peut voir qui est déconnecté)
+  const roomForSend = {
+    ...room,
+    players: room.players.map(p => ({ ...p, connected: playerToWs.has(p.id) })),
+  };
+
   for (const player of room.players) {
     let filteredBids = bids;
 
@@ -164,7 +179,7 @@ function broadcastState(roomCode: string) {
     }
 
     const shameLog = roomShameLog.get(roomCode) ?? [];
-    sendTo(player.id, { type: 'state', room, bids: filteredBids, results, shameLog });
+    sendTo(player.id, { type: 'state', room: roomForSend, bids: filteredBids, results, shameLog });
   }
 
   // L'état du jeu vient de changer → on programme une sauvegarde sur disque.
@@ -173,15 +188,39 @@ function broadcastState(roomCode: string) {
 
 // ─── Message handler ──────────────────────────────────────────────────────────
 
+/** Rend le contrôle à un joueur dont l'hôte avait pris la main (déconnexion). */
+function releaseAutoControl(playerId: string) {
+  const code = playerToRoom.get(playerId);
+  if (!code) return;
+  const room = rooms.get(code);
+  const p = room?.players.find(x => x.id === playerId);
+  if (p?.autoManaged) {
+    p.managedByHost = false;
+    p.autoManaged = false;
+    log(`[room] ${code} ${p.name} est de retour — contrôle rendu`);
+  }
+}
+
 function handleMessage(ws: any, raw: string) {
   let msg: any;
   try { msg = JSON.parse(raw); } catch { return; }
+
+  // Heartbeat — répond avant toute validation (pas besoin de playerId)
+  if (msg.type === 'ping') {
+    if (msg.playerId) playerToWs.set(msg.playerId, ws);
+    try { ws.send('{"type":"pong"}'); } catch {}
+    return;
+  }
 
   const playerId: string | undefined = msg.playerId;
   if (!playerId) return;
 
   // Always update the ws reference for this player (handles reconnects)
+  const wasDisconnected = !playerToWs.has(playerId);
   playerToWs.set(playerId, ws);
+
+  // Si le joueur revient et que l'hôte avait pris le contrôle → on le lui rend
+  if (wasDisconnected) releaseAutoControl(playerId);
 
   switch (msg.type as string) {
 
@@ -801,6 +840,30 @@ function handleMessage(ws: any, raw: string) {
       break;
     }
 
+    // ── Host takes control of a disconnected player ──────────────────────────
+    case 'take-control': {
+      const code = playerToRoom.get(playerId);
+      if (!code) return;
+      const room = rooms.get(code);
+      if (!room || room.host_player_id !== playerId) { sendError(ws, 'Non autorisé'); return; }
+      if (room.status === 'lobby' || room.status === 'complete') { sendError(ws, 'Indisponible dans cette phase'); return; }
+
+      const targetId = msg.targetPlayerId as string;
+      if (!targetId || targetId === playerId) { sendError(ws, 'Cible invalide'); return; }
+      const target = room.players.find(p => p.id === targetId);
+      if (!target) { sendError(ws, 'Joueur introuvable'); return; }
+      if (target.surrendered) { sendError(ws, 'Ce joueur a abandonné'); return; }
+      if (target.managedByHost) { sendError(ws, 'Déjà contrôlé'); return; }
+      if (playerToWs.has(targetId)) { sendError(ws, 'Ce joueur est encore connecté'); return; }
+
+      target.managedByHost = true;
+      target.autoManaged = true; // sera rendu automatiquement à sa reconnexion
+      room.updated_at = now();
+      log(`[room] ${code} l'hôte prend le contrôle de ${target.name}`);
+      broadcastState(code);
+      break;
+    }
+
     // ── Player surrenders (leaves game but keeps score history) ──────────────
     case 'surrender': {
       const code = playerToRoom.get(playerId);
@@ -948,6 +1011,19 @@ if (BASE) log(`[server] base détectée : "${BASE}"`);
 // Recharge les parties en cours depuis le disque (reprise après coupure/redémarrage).
 loadSnapshot();
 
+// ─── Filets de sécurité process ─────────────────────────────────────────────
+// Une exception imprévue ne doit pas tuer le serveur (les parties resteraient en RAM).
+process.on('uncaughtException', (e) => log('[fatal] exception non gérée :', e));
+process.on('unhandledRejection', (e) => log('[fatal] promesse rejetée :', e));
+// Arrêt propre (Ctrl+C / kill) : on sauvegarde une dernière fois avant de quitter.
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    log(`[exit] ${sig} reçu — sauvegarde finale...`);
+    saveSnapshot();
+    process.exit(0);
+  });
+}
+
 Bun.serve({
   port: PORT,
 
@@ -1076,7 +1152,12 @@ Bun.serve({
   websocket: {
     open(ws)  { log('[ws] client connecté'); },
     message(ws, data) {
-      handleMessage(ws, typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
+      // try/catch global : une erreur sur UN message ne doit jamais tuer le serveur
+      try {
+        handleMessage(ws, typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
+      } catch (e) {
+        log('[ws] erreur de traitement message :', e);
+      }
     },
     close(ws) {
       let disconnectedPlayerId: string | null = null;
@@ -1090,6 +1171,8 @@ Bun.serve({
         if (code) {
           const room = rooms.get(code);
           if (room) {
+            // Prévenir les autres qu'un joueur s'est déconnecté (statut 📵 + bouton contrôle)
+            broadcastState(code);
             const allGone = room.players.every(p => !playerToWs.has(p.id));
             if (allGone) {
               // Délai de grâce : 60s en lobby, 10 min si partie en cours

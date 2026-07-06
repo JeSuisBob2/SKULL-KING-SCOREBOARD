@@ -22,7 +22,7 @@ export default function RoomBets() {
     submitBid, markBidReady, advanceToScoring,
     submitBidForPlayer, markBidReadyForPlayer,
     resetMyBid, resetBids, resetBidForPlayer, shamePenalty, removeShame, shameLog,
-    surrender,
+    surrender, takeControl,
   } = useRoomStore();
   const [surrenderOpen, setSurrenderOpen] = useState(false);
 
@@ -147,7 +147,9 @@ export default function RoomBets() {
     await submitBid(myBid, myHarry);
     await markBidReady();
     setSubmitted(true);
-    wasSubmittedRef.current = true;
+    // NB : on ne touche PAS à wasSubmittedRef ici — il ne doit refléter que ce que
+    // le serveur a confirmé. Sinon, un message perdu (connexion instable) était
+    // interprété comme un "rollback" et remettait le pari à zéro.
   };
 
   if (!room) return null;
@@ -386,10 +388,24 @@ export default function RoomBets() {
                   </li>
                 );
               }
+              const disconnected = p.connected === false && !p.managedByHost;
               return (
                 <li key={p.id} className="flex items-center justify-between text-sm">
-                  <span>{p.name}</span>
+                  <span>
+                    {p.name}
+                    {disconnected && <span className="ml-1 text-xs" title="Déconnecté">📵</span>}
+                    {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
+                  </span>
                   <div className="flex items-center gap-2">
+                    {isHost && disconnected && !bid?.is_ready && (
+                      <button
+                        className="text-xs px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 transition-colors"
+                        onClick={() => takeControl(p.id)}
+                        title="Parier à sa place"
+                      >
+                        🎮 Contrôler
+                      </button>
+                    )}
                     {isHost && bid && (
                       <button
                         className="text-xs text-red-400 opacity-60 hover:opacity-100 transition-opacity"

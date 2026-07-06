@@ -13,8 +13,10 @@ export interface RoomPlayer {
   name: string;
   isHost: boolean;
   managedByHost?: boolean;
+  autoManaged?: boolean;   // contrôle pris par l'hôte suite à une déconnexion
   surrendered?: boolean;
   surrenderedAt?: string;
+  connected?: boolean;     // statut de connexion (fourni par le serveur)
 }
 
 export interface RoomRow {

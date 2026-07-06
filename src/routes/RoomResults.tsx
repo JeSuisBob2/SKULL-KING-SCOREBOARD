@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import Layout from '../components/Layout';
 import NumberStepper from '../components/NumberStepper';
@@ -29,7 +29,7 @@ const EMPTY_SPECIALS = () => ({
 export default function RoomResults() {
   const nav = useNavigate();
   const { roomId, roundNumber } = useParams();
-  const { room, bids, results, shameLog, myPlayerId, kicked, subscribeToRoom, unsubscribeFromRoom, submitResult, markResultDone, advanceToNextRound, hostOverrideResult, deleteRoom, submitResultForPlayer, markResultDoneForPlayer, shamePenalty, removeShame, surrender } = useRoomStore();
+  const { room, bids, results, shameLog, myPlayerId, kicked, subscribeToRoom, unsubscribeFromRoom, submitResult, markResultDone, advanceToNextRound, hostOverrideResult, deleteRoom, submitResultForPlayer, markResultDoneForPlayer, shamePenalty, removeShame, surrender, takeControl } = useRoomStore();
   const [surrenderOpen, setSurrenderOpen] = useState(false);
 
   const rNum = Number(roundNumber || 1);
@@ -40,7 +40,12 @@ export default function RoomResults() {
   const [harryAdj, setHarryAdj] = useState(0);
   const [specials, setSpecials] = useState(EMPTY_SPECIALS());
   const [collapsedSpecials, setCollapsedSpecials] = useState(true);
-  const [submitted, setSubmitted] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  // "Validé" = ce que dit le SERVEUR (source de vérité), pas un état local.
+  // `pending` couvre juste le court instant entre le clic et la confirmation serveur.
+  const myResult = results.find(r => r.player_id === myPlayerId && r.round_number === rNum);
+  const submitted = !!myResult?.is_done || pending;
   const [showStandings, setShowStandings] = useState(false);
   const [managedData, setManagedData] = useState<Record<string, { tricks: number; bonus: number; harryAdj: number; specials: any }>>({});
   const [managedDone, setManagedDone] = useState<Record<string, boolean>>({});
@@ -54,18 +59,27 @@ export default function RoomResults() {
     return () => unsubscribeFromRoom();
   }, [roomId]);
 
-  // Load my existing result
+  // Charge mon résultat existant UNE SEULE FOIS par manche.
+  // Important : les broadcasts des autres joueurs ne doivent JAMAIS écraser
+  // une saisie en cours (c'était le bug des "plis annulés").
+  const loadedRoundRef = useRef<number | null>(null);
   useEffect(() => {
+    if (loadedRoundRef.current === rNum) return;
     const existing = results.find(r => r.player_id === myPlayerId && r.round_number === rNum);
     if (existing) {
+      loadedRoundRef.current = rNum;
       setTricks(existing.tricks);
       setBonus(existing.bonus);
       if (existing.specials && Object.keys(existing.specials).length > 0) {
         setSpecials({ ...EMPTY_SPECIALS(), ...existing.specials });
       }
-      if (existing.is_done) setSubmitted(true);
     }
   }, [results, myPlayerId, rNum]);
+
+  // Confirmation serveur reçue → fin de l'attente locale
+  useEffect(() => {
+    if (myResult?.is_done) setPending(false);
+  }, [myResult?.is_done]);
 
   // Navigate on room status change
   useEffect(() => {
@@ -111,9 +125,12 @@ export default function RoomResults() {
   const projectedScore = calculateScore(effectiveBid, tricks, rNum, bonus, config);
 
   const handleSubmit = async () => {
+    setPending(true);
     await submitResult({ tricks, bonus, harryAdjustment: harryAdj, specials });
     await markResultDone();
-    setSubmitted(true);
+    // Filet de sécurité : si le serveur n'a pas confirmé après 6s (message perdu),
+    // on réaffiche le formulaire — la saisie est conservée, il suffit de re-valider.
+    setTimeout(() => setPending(false), 6000);
   };
 
   const exportToExcel = async () => {
@@ -683,12 +700,28 @@ export default function RoomResults() {
                     </li>
                   );
                 }
+                const disconnected = p.connected === false && !p.managedByHost;
                 return (
                   <li key={p.id} className="flex items-center justify-between text-sm">
-                    <span>{p.name}</span>
-                    <span className={r?.is_done ? 'text-emerald-400' : 'text-white/30'}>
-                      {r?.is_done ? '✓ Terminé' : '⏳'}
+                    <span>
+                      {p.name}
+                      {disconnected && <span className="ml-1 text-xs" title="Déconnecté">📵</span>}
+                      {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
                     </span>
+                    <div className="flex items-center gap-2">
+                      {isHost && disconnected && !r?.is_done && (
+                        <button
+                          className="text-xs px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 transition-colors"
+                          onClick={() => takeControl(p.id)}
+                          title="Saisir les plis à sa place"
+                        >
+                          🎮 Contrôler
+                        </button>
+                      )}
+                      <span className={r?.is_done ? 'text-emerald-400' : 'text-white/30'}>
+                        {r?.is_done ? '✓ Terminé' : '⏳'}
+                      </span>
+                    </div>
                   </li>
                 );
               })}
