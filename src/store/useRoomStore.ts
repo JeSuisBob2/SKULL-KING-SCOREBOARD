@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { wsClient } from '../lib/ws';
-import { RoomRow, RoomBidRow, RoomResultRow, RoomPlayer, ShameEntry } from '../lib/supabase';
+import { RoomRow, RoomBidRow, RoomResultRow, RoomPlayer, ShameEntry, ThumbEntry } from '../lib/supabase';
 import { calculateScore } from '../lib/score';
 import { presets } from '../config/scoringConfig';
 import { uid } from '../lib/utils';
@@ -30,6 +30,7 @@ interface RoomState {
   bids: RoomBidRow[];
   results: RoomResultRow[];
   shameLog: ShameEntry[];
+  thumbs: ThumbEntry[];
   loading: boolean;
   error: string | null;
   kicked: boolean;
@@ -64,6 +65,7 @@ interface RoomState {
   surrenderManaged: (targetPlayerId: string) => void;
   transferHost: (targetPlayerId: string) => void;
   takeControl: (targetPlayerId: string) => void;
+  setThumb: (targetPlayerId: string, dir: 1 | -1 | 0) => void;
   deleteRoom: () => void;
   subscribeToRoom: (roomId: string) => void;
   unsubscribeFromRoom: () => void;
@@ -107,7 +109,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
 
   // WS event listeners (registered once at store creation)
   wsClient.on('state', (msg) => {
-    set({ room: msg.room, bids: msg.bids ?? [], results: msg.results ?? [], shameLog: msg.shameLog ?? [], loading: false, error: null });
+    set({ room: msg.room, bids: msg.bids ?? [], results: msg.results ?? [], shameLog: msg.shameLog ?? [], thumbs: msg.thumbs ?? [], loading: false, error: null });
     if (msg.room?.code) localStorage.setItem('skullking-active-room', msg.room.code);
     resolvePending();
   });
@@ -120,19 +122,19 @@ export const useRoomStore = create<RoomState>((set, get) => {
   wsClient.on('room-deleted', () => {
     wsClient.disconnect();
     localStorage.removeItem('skullking-active-room');
-    set({ room: null, bids: [], results: [], shameLog: [], error: null });
+    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], error: null });
   });
 
   wsClient.on('kicked', () => {
     wsClient.disconnect();
     localStorage.removeItem('skullking-active-room');
-    set({ room: null, bids: [], results: [], shameLog: [], error: null, kicked: true });
+    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], error: null, kicked: true });
   });
 
   wsClient.on('surrendered', () => {
     wsClient.disconnect();
     localStorage.removeItem('skullking-active-room');
-    set({ room: null, bids: [], results: [], shameLog: [], error: null });
+    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], error: null });
   });
 
   // Resynchronisation complète de l'état depuis le serveur.
@@ -168,6 +170,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
     bids: [],
     results: [],
     shameLog: [],
+    thumbs: [],
     loading: false,
     error: null,
     kicked: false,
@@ -386,6 +389,10 @@ export const useRoomStore = create<RoomState>((set, get) => {
       wsClient.send({ type: 'take-control', playerId: get().myPlayerId, targetPlayerId });
     },
 
+    setThumb(targetPlayerId: string, dir: 1 | -1 | 0) {
+      wsClient.send({ type: 'set-thumb', playerId: get().myPlayerId, targetPlayerId, dir });
+    },
+
     deleteRoom() {
       wsClient.send({ type: 'delete-room', playerId: get().myPlayerId });
     },
@@ -412,7 +419,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
       }
       wsClient.disconnect();
       localStorage.removeItem('skullking-active-room');
-      set({ room: null, bids: [], results: [], shameLog: [], error: null, kicked: false });
+      set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], error: null, kicked: false });
     },
   };
 });

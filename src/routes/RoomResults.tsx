@@ -12,6 +12,7 @@ import ExcelJS from 'exceljs';
 
 import ShameBag from '../components/ShameBag';
 import SurrenderDialog from '../components/SurrenderDialog';
+import ThumbButtons from '../components/ThumbButtons';
 
 const EMPTY_SPECIALS = () => ({
   skullKing: { positive: 0, negative: 0 },
@@ -456,6 +457,9 @@ export default function RoomResults() {
                     <div className="text-xs opacity-60">
                       Pari {b?.bid ?? '?'} · Plis {r?.tricks ?? '?'}
                     </div>
+                    <div className="mt-2">
+                      <ThumbButtons targetId={p.id} round={rNum} />
+                    </div>
                   </div>
                   <div className="text-right">
                     <ScoreChip value={r?.score ?? 0} />
@@ -709,6 +713,7 @@ export default function RoomResults() {
                       {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
                     </span>
                     <div className="flex items-center gap-2">
+                      <ThumbButtons targetId={p.id} round={rNum} />
                       {isHost && disconnected && !r?.is_done && (
                         <button
                           className="text-xs px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 transition-colors"

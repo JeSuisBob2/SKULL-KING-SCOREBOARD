@@ -51,6 +51,14 @@ export interface ShameEntry {
   round: number;
 }
 
+export interface ThumbEntry {
+  id: string;
+  round: number;
+  fromId: string;
+  toId: string;
+  dir: 1 | -1;
+}
+
 export interface RoomResultRow {
   id: string;
   room_id: string;

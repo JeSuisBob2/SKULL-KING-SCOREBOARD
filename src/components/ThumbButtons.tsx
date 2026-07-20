@@ -1,0 +1,47 @@
+import { useRoomStore } from '../store/useRoomStore';
+
+interface Props {
+  targetId: string;
+  round: number;
+}
+
+/**
+ * Pouces 👍/👎 sur un joueur pour la manche en cours.
+ * Chaque joueur peut donner un seul pouce (levé OU baissé) par cible et par manche ;
+ * re-cliquer sur son pouce le retire. Les compteurs affichent le total reçu.
+ * Le reset à la manche suivante est automatique (les pouces sont liés au numéro de manche).
+ */
+export default function ThumbButtons({ targetId, round }: Props) {
+  const { thumbs, myPlayerId, setThumb } = useRoomStore();
+
+  const myDir = thumbs.find(t => t.round === round && t.fromId === myPlayerId && t.toId === targetId)?.dir ?? 0;
+  const up = thumbs.filter(t => t.round === round && t.toId === targetId && t.dir === 1).length;
+  const down = thumbs.filter(t => t.round === round && t.toId === targetId && t.dir === -1).length;
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <button
+        className={`text-base leading-none px-2 py-1 rounded-lg transition-colors ${
+          myDir === 1
+            ? 'bg-emerald-500/40 ring-1 ring-emerald-400'
+            : 'bg-white/10 opacity-60 hover:opacity-100 hover:bg-white/20'
+        }`}
+        onClick={() => setThumb(targetId, myDir === 1 ? 0 : 1)}
+        title="Pouce levé"
+      >
+        👍{up > 0 && <span className="ml-1 text-sm tabular-nums font-bold text-emerald-300">{up}</span>}
+      </button>
+      <button
+        className={`text-base leading-none px-2 py-1 rounded-lg transition-colors ${
+          myDir === -1
+            ? 'bg-red-500/40 ring-1 ring-red-400'
+            : 'bg-white/10 opacity-60 hover:opacity-100 hover:bg-white/20'
+        }`}
+        onClick={() => setThumb(targetId, myDir === -1 ? 0 : -1)}
+        title="Pouce baissé"
+      >
+        👎{down > 0 && <span className="ml-1 text-sm tabular-nums font-bold text-red-300">{down}</span>}
+      </button>
+    </span>
+  );
+}

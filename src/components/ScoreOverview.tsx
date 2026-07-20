@@ -72,9 +72,16 @@ export default function ScoreOverview({ room, results, bids, shameLog, myPlayerI
   const totalFor = (pid: string) =>
     results.filter(r => r.player_id === pid && r.is_done).reduce((s, r) => s + r.score, 0) + shameFor(pid);
 
+  // Pendant la saisie de la manche en cours (scoring), seuls les joueurs ayant déjà
+  // validé leurs résultats sont modifiables — les autres sont encore en train de saisir.
+  const editablePlayers = (round: number) =>
+    round === room.current_round && room.status === 'scoring'
+      ? room.players.filter(p => !!resultFor(p.id, round))
+      : room.players;
+
   const openEdit = (round: number) => {
     const data: Record<string, PlayerEditState> = {};
-    for (const p of room.players) {
+    for (const p of editablePlayers(round)) {
       const res = resultFor(p.id, round);
       const bid = bidFor(p.id, round);
       data[p.id] = {
@@ -94,7 +101,7 @@ export default function ScoreOverview({ room, results, bids, shameLog, myPlayerI
 
   const saveEdit = () => {
     if (editingRound === null) return;
-    for (const p of room.players) {
+    for (const p of editablePlayers(editingRound)) {
       const d = editData[p.id];
       if (!d) continue;
       hostOverrideResult(p.id, {
@@ -217,8 +224,13 @@ export default function ScoreOverview({ room, results, bids, shameLog, myPlayerI
       {open && editingRound !== null && (
         <div className="mt-3 space-y-4">
           <div className="text-sm font-semibold text-center opacity-70">✏️ Modifier manche {editingRound}</div>
+          {editingRound === room.current_round && room.status === 'scoring' && editablePlayers(editingRound).length < room.players.length && (
+            <div className="text-xs opacity-50 text-center">
+              Seuls les résultats déjà validés sont modifiables pendant la saisie
+            </div>
+          )}
 
-          {room.players.map(p => {
+          {editablePlayers(editingRound).map(p => {
             const d = editData[p.id];
             if (!d) return null;
             const bid = bidFor(p.id, editingRound);

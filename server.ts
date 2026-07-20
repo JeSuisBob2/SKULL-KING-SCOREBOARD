@@ -59,6 +59,8 @@ const rooms        = new Map<string, Room>();
 const roomBids     = new Map<string, Bid[]>();
 const roomResults  = new Map<string, Result[]>();
 const roomShameLog = new Map<string, Array<{ id: string; playerId: string; playerName: string; amount: number; round: number }>>();
+// Pouces 👍/👎 donnés par les joueurs, liés à une manche (reset naturel à la manche suivante)
+const roomThumbs   = new Map<string, Array<{ id: string; round: number; fromId: string; toId: string; dir: 1 | -1 }>>();
 
 const playerToRoom = new Map<string, string>(); // playerId → roomCode
 const playerToWs   = new Map<string, ReturnType<typeof Bun.serve>['upgrade'] extends (...a: any[]) => any ? any : any>();
@@ -97,6 +99,7 @@ function saveSnapshot() {
       roomBids:     [...roomBids.entries()],
       roomResults:  [...roomResults.entries()],
       roomShameLog: [...roomShameLog.entries()],
+      roomThumbs:   [...roomThumbs.entries()],
       playerToRoom: [...playerToRoom.entries()],
     };
     const tmp = SNAPSHOT_FILE + '.tmp';
@@ -125,12 +128,14 @@ function loadSnapshot() {
     for (const [k, v] of snap.roomBids ?? [])     roomBids.set(k, v);
     for (const [k, v] of snap.roomResults ?? [])  roomResults.set(k, v);
     for (const [k, v] of snap.roomShameLog ?? []) roomShameLog.set(k, v);
+    for (const [k, v] of snap.roomThumbs ?? [])   roomThumbs.set(k, v);
     for (const [k, v] of snap.playerToRoom ?? []) playerToRoom.set(k, v);
     // Garantit que chaque salle a ses structures annexes (évite tout crash sur .get(code)!)
     for (const code of rooms.keys()) {
       if (!roomBids.has(code))     roomBids.set(code, []);
       if (!roomResults.has(code))  roomResults.set(code, []);
       if (!roomShameLog.has(code)) roomShameLog.set(code, []);
+      if (!roomThumbs.has(code))   roomThumbs.set(code, []);
     }
     log(`[load] sauvegarde du ${snap.savedAt ?? '?'} rechargée : ${rooms.size} salle(s)`);
   } catch (e) {
@@ -179,7 +184,8 @@ function broadcastState(roomCode: string) {
     }
 
     const shameLog = roomShameLog.get(roomCode) ?? [];
-    sendTo(player.id, { type: 'state', room: roomForSend, bids: filteredBids, results, shameLog });
+    const thumbs   = roomThumbs.get(roomCode) ?? [];
+    sendTo(player.id, { type: 'state', room: roomForSend, bids: filteredBids, results, shameLog, thumbs });
   }
 
   // L'état du jeu vient de changer → on programme une sauvegarde sur disque.
@@ -248,6 +254,7 @@ function handleMessage(ws: any, raw: string) {
       roomBids.set(code, []);
       roomResults.set(code, []);
       roomShameLog.set(code, []);
+      roomThumbs.set(code, []);
 
       for (const p of players) playerToRoom.set(p.id, code);
 
@@ -260,6 +267,7 @@ function handleMessage(ws: any, raw: string) {
         roomBids.delete(code);
         roomResults.delete(code);
       roomShameLog.delete(code);
+      roomThumbs.delete(code);
         scheduleSave();
         log(`[room] ${code} supprimée automatiquement après 12h`);
       }, 12 * 60 * 60 * 1000);
@@ -339,6 +347,7 @@ function handleMessage(ws: any, raw: string) {
         roomBids.delete(code);
         roomResults.delete(code);
       roomShameLog.delete(code);
+      roomThumbs.delete(code);
         scheduleSave();
         log(`[room] ${code} supprimée (hôte/dernier joueur parti)`);
       } else {
@@ -403,6 +412,7 @@ function handleMessage(ws: any, raw: string) {
       room.updated_at = now();
       roomBids.set(code, []);
       roomResults.set(code, []);
+      roomThumbs.set(code, []);
 
       log(`[room] ${code} démarrée`);
       broadcastState(code);
@@ -620,12 +630,21 @@ function handleMessage(ws: any, raw: string) {
       const targetId = msg.targetPlayerId as string;
       if (!room.players.some(p => p.id === targetId)) return;
 
-      // Accept any completed round (past or current if round-complete/complete)
+      // Accept past rounds, and the current round during scoring/round-complete/complete
       const roundNum: number = msg.roundNumber ?? room.current_round;
       const isPast = roundNum < room.current_round;
       const isCurrent = roundNum === room.current_round &&
-        (room.status === 'round-complete' || room.status === 'complete');
+        (room.status === 'scoring' || room.status === 'round-complete' || room.status === 'complete');
       if (!isPast && !isCurrent) return;
+
+      // Pendant la saisie (scoring), on ne corrige que les résultats déjà validés :
+      // jamais créer/écraser le résultat d'un joueur encore en train de saisir.
+      if (roundNum === room.current_round && room.status === 'scoring') {
+        const existingDone = (roomResults.get(code) ?? []).find(
+          r => r.player_id === targetId && r.round_number === roundNum
+        )?.is_done;
+        if (!existingDone) return;
+      }
 
       // Update harry adjustment in bid if provided
       if (msg.harryAdjustment !== undefined) {
@@ -754,6 +773,31 @@ function handleMessage(ws: any, raw: string) {
       }
 
       log(`[room] ${code} score modifié — ${targetId} manche ${roundNum} → ${score}`);
+      broadcastState(code);
+      break;
+    }
+
+    // ── Player gives a thumb up/down to another player (per round) ──────────
+    case 'set-thumb': {
+      const code = playerToRoom.get(playerId);
+      if (!code) return;
+      const room = rooms.get(code);
+      if (!room || room.status === 'lobby') return;
+
+      const targetId = msg.targetPlayerId as string;
+      const dir = Number(msg.dir); // 1 = 👍, -1 = 👎, 0 = retirer
+      if (!room.players.some(p => p.id === targetId)) return;
+      if (dir !== 1 && dir !== -1 && dir !== 0) return;
+
+      const thumbs = roomThumbs.get(code) ?? [];
+      // Un seul pouce par donneur et par cible pour la manche en cours
+      const filtered = thumbs.filter(
+        t => !(t.round === room.current_round && t.fromId === playerId && t.toId === targetId)
+      );
+      if (dir !== 0) {
+        filtered.push({ id: uid(), round: room.current_round, fromId: playerId, toId: targetId, dir: dir as 1 | -1 });
+      }
+      roomThumbs.set(code, filtered);
       broadcastState(code);
       break;
     }
@@ -905,6 +949,7 @@ function handleMessage(ws: any, raw: string) {
           roomBids.delete(code);
           roomResults.delete(code);
           roomShameLog.delete(code);
+      roomThumbs.delete(code);
           scheduleSave();
           log(`[room] ${code} supprimée (hôte abandonne sans successeur)`);
           break;
@@ -978,6 +1023,7 @@ function handleMessage(ws: any, raw: string) {
       roomBids.delete(code);
       roomResults.delete(code);
       roomShameLog.delete(code);
+      roomThumbs.delete(code);
       scheduleSave();
       log(`[room] ${code} supprimée`);
       break;
@@ -1073,6 +1119,7 @@ Bun.serve({
           roomBids.delete(code);
           roomResults.delete(code);
       roomShameLog.delete(code);
+      roomThumbs.delete(code);
           scheduleSave();
           deleted++;
         }
@@ -1188,6 +1235,7 @@ Bun.serve({
                   roomBids.delete(code);
                   roomResults.delete(code);
       roomShameLog.delete(code);
+      roomThumbs.delete(code);
                   scheduleSave();
                   log(`[room] ${code} supprimée (inactivité)`);
                 }

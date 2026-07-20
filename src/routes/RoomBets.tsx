@@ -7,6 +7,7 @@ import { useRoomStore } from '../store/useRoomStore';
 import ScoreOverview from '../components/ScoreOverview';
 import ShameBag from '../components/ShameBag';
 import SurrenderDialog from '../components/SurrenderDialog';
+import ThumbButtons from '../components/ThumbButtons';
 
 const formatTime = (iso: string | null) => {
   if (!iso) return null;
@@ -340,6 +341,9 @@ export default function RoomBets() {
                       {isFirst && <span className="ml-2 text-xs text-accent font-semibold">⚡ commence</span>}
                       {p.id === myPlayerId && <span className="text-xs ml-1 opacity-50">(vous)</span>}
                     </div>
+                    <div className="mt-2">
+                      <ThumbButtons targetId={p.id} round={rNum} />
+                    </div>
                   </div>
                   <div className="text-right">
                     <div className="text-2xl font-bold text-accent">{bid?.bid ?? '?'}</div>
@@ -397,6 +401,7 @@ export default function RoomBets() {
                     {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
                   </span>
                   <div className="flex items-center gap-2">
+                    <ThumbButtons targetId={p.id} round={rNum} />
                     {isHost && disconnected && !bid?.is_ready && (
                       <button
                         className="text-xs px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 transition-colors"
@@ -408,10 +413,11 @@ export default function RoomBets() {
                     )}
                     {isHost && bid && (
                       <button
-                        className="text-xs text-red-400 opacity-60 hover:opacity-100 transition-opacity"
+                        className="text-xs px-2 py-1 rounded-lg border border-red-400/60 bg-red-950/50 text-red-300 font-semibold hover:bg-red-900/70 transition-colors whitespace-nowrap"
                         onClick={() => resetBidForPlayer(p.id)}
+                        title={`Annuler le pari de ${p.name}`}
                       >
-                        🔄
+                        🔄 Reset
                       </button>
                     )}
                     <span className={bid?.is_ready ? 'text-emerald-400' : 'text-white/30'}>
