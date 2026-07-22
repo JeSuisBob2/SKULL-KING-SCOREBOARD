@@ -17,27 +17,27 @@ export default function BonusEditor({ details, onChange }: Props) {
     <div>
       <div className="flex items-center justify-between">
         <span>Bonus</span>
-        <div className="flex items-center gap-1">
-          {[-20, -10, -5].map(delta => (
-            <button
-              key={delta}
-              className="btn btn-ghost text-sm px-2 py-1"
-              onClick={() => onChange([...details, delta])}
-            >
-              {delta}
-            </button>
-          ))}
-          <span className="w-10 text-center tabular-nums font-semibold">{total}</span>
-          {[+5, +10, +20].map(delta => (
-            <button
-              key={delta}
-              className="btn btn-ghost text-sm px-2 py-1"
-              onClick={() => onChange([...details, delta])}
-            >
-              +{delta}
-            </button>
-          ))}
-        </div>
+        <span className="tabular-nums font-semibold">{total > 0 ? `+${total}` : total}</span>
+      </div>
+      <div className="grid grid-cols-5 gap-1 mt-1.5">
+        {[-40, -30, -20, -10, -5].map(delta => (
+          <button
+            key={delta}
+            className="btn btn-ghost text-sm px-1 py-1 text-red-300"
+            onClick={() => onChange([...details, delta])}
+          >
+            {delta}
+          </button>
+        ))}
+        {[+5, +10, +20, +30, +40].map(delta => (
+          <button
+            key={delta}
+            className="btn btn-ghost text-sm px-1 py-1 text-emerald-300"
+            onClick={() => onChange([...details, delta])}
+          >
+            +{delta}
+          </button>
+        ))}
       </div>
       {details.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-1.5">
