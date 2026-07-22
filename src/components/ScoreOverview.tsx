@@ -13,6 +13,7 @@ import { useRoomStore } from '../store/useRoomStore';
 import NumberStepper from './NumberStepper';
 import DualCardCounter from './DualCardCounter';
 import ScoreChip from './ScoreChip';
+import BonusEditor, { sumBonus } from './BonusEditor';
 import { calculateScore } from '../lib/score';
 import { presets } from '../config/scoringConfig';
 import type { RoomRow, RoomBidRow, RoomResultRow, ShameEntry } from '../lib/supabase';
@@ -41,8 +42,9 @@ interface Props {
 
 interface PlayerEditState {
   tricks: number;
-  bonus: number;
+  bonusDetails: number[];
   harryAdj: number;
+  jokerSuccess: boolean;
   specials: ReturnType<typeof EMPTY_SPECIALS>;
   collapsedSpecials: boolean;
 }
@@ -86,8 +88,9 @@ export default function ScoreOverview({ room, results, bids, shameLog, myPlayerI
       const bid = bidFor(p.id, round);
       data[p.id] = {
         tricks: res?.tricks ?? 0,
-        bonus: res?.bonus ?? 0,
+        bonusDetails: res?.bonus_details ?? (res?.bonus ? [res.bonus] : []),
         harryAdj: bid?.harry_adjustment ?? 0,
+        jokerSuccess: res?.joker_success ?? false,
         specials: res?.specials ? { ...EMPTY_SPECIALS(), ...res.specials } : EMPTY_SPECIALS(),
         collapsedSpecials: true,
       };
@@ -106,8 +109,9 @@ export default function ScoreOverview({ room, results, bids, shameLog, myPlayerI
       if (!d) continue;
       hostOverrideResult(p.id, {
         tricks: d.tricks,
-        bonus: d.bonus,
+        bonusDetails: d.bonusDetails,
         harryAdjustment: d.harryAdj,
+        jokerSuccess: d.jokerSuccess,
         specials: d.specials,
       }, editingRound);
     }
@@ -235,7 +239,7 @@ export default function ScoreOverview({ room, results, bids, shameLog, myPlayerI
             if (!d) return null;
             const bid = bidFor(p.id, editingRound);
             const effectiveBid = (bid?.bid ?? 0) + d.harryAdj;
-            const projected = calculateScore(effectiveBid, d.tricks, editingRound, d.bonus, config);
+            const projected = calculateScore(effectiveBid, d.tricks, editingRound, sumBonus(d.bonusDetails), config, d.jokerSuccess);
             return (
               <div key={p.id} className="card p-4 space-y-3 border border-white/20">
                 <div className="flex items-center justify-between">
@@ -257,22 +261,27 @@ export default function ScoreOverview({ room, results, bids, shameLog, myPlayerI
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <span>Bonus</span>
-                  <div className="flex items-center gap-1">
-                    {[-20, -10, -5].map(delta => (
-                      <button key={delta} className="btn btn-ghost text-sm px-2 py-1" onClick={() => setField(p.id, 'bonus', d.bonus + delta)}>
-                        {delta}
+                {bid?.joker && bid?.bid === 0 && (
+                  <div className="flex items-center justify-between">
+                    <span>🃏 Joker débarrassé ?</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${d.jokerSuccess ? 'bg-emerald-500/40 ring-1 ring-emerald-400 text-white' : 'bg-white/10 opacity-60 hover:opacity-100'}`}
+                        onClick={() => setField(p.id, 'jokerSuccess', true)}
+                      >
+                        Oui
                       </button>
-                    ))}
-                    <span className="w-10 text-center tabular-nums">{d.bonus}</span>
-                    {[+5, +10, +20].map(delta => (
-                      <button key={delta} className="btn btn-ghost text-sm px-2 py-1" onClick={() => setField(p.id, 'bonus', d.bonus + delta)}>
-                        +{delta}
+                      <button
+                        className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${!d.jokerSuccess ? 'bg-red-500/40 ring-1 ring-red-400 text-white' : 'bg-white/10 opacity-60 hover:opacity-100'}`}
+                        onClick={() => setField(p.id, 'jokerSuccess', false)}
+                      >
+                        Non
                       </button>
-                    ))}
+                    </div>
                   </div>
-                </div>
+                )}
+
+                <BonusEditor details={d.bonusDetails} onChange={v => setField(p.id, 'bonusDetails', v)} />
 
                 <div>
                   <button

@@ -46,18 +46,18 @@ interface RoomState {
   shufflePlayers: () => void;
   kickPlayer: (targetPlayerId: string) => void;
   startGame: () => Promise<void>;
-  submitBid: (bid: number, harryAdjustment?: number) => Promise<void>;
-  submitBidForPlayer: (targetPlayerId: string, bid: number, harryAdjustment?: number) => void;
+  submitBid: (bid: number, harryAdjustment?: number, joker?: boolean) => Promise<void>;
+  submitBidForPlayer: (targetPlayerId: string, bid: number, harryAdjustment?: number, joker?: boolean) => void;
   markBidReadyForPlayer: (targetPlayerId: string) => void;
-  submitResultForPlayer: (targetPlayerId: string, data: { tricks: number; bonus: number; harryAdjustment?: number; specials: Record<string, { positive: number; negative: number }> }) => void;
+  submitResultForPlayer: (targetPlayerId: string, data: { tricks: number; bonusDetails: number[]; harryAdjustment?: number; jokerSuccess?: boolean; specials: Record<string, { positive: number; negative: number }> }) => void;
   markResultDoneForPlayer: (targetPlayerId: string) => void;
   markBidReady: () => Promise<void>;
   advanceToScoring: () => Promise<void>;
-  submitResult: (data: { tricks: number; bonus: number; harryAdjustment?: number; specials: Record<string, { positive: number; negative: number }> }) => Promise<void>;
+  submitResult: (data: { tricks: number; bonusDetails: number[]; harryAdjustment?: number; jokerSuccess?: boolean; specials: Record<string, { positive: number; negative: number }> }) => Promise<void>;
   markResultDone: () => Promise<void>;
   advanceToNextRound: () => Promise<void>;
   endGame: () => Promise<void>;
-  hostOverrideResult: (targetPlayerId: string, data: { tricks: number; bonus: number; harryAdjustment?: number; specials: Record<string, { positive: number; negative: number }> }, roundNumber?: number) => void;
+  hostOverrideResult: (targetPlayerId: string, data: { tricks: number; bonusDetails: number[]; harryAdjustment?: number; jokerSuccess?: boolean; specials: Record<string, { positive: number; negative: number }> }, roundNumber?: number) => void;
   setScore: (targetPlayerId: string, roundNumber: number, score: number, tricks?: number, harryAdjustment?: number) => void;
   shamePenalty: (targetPlayerId: string, amount: -10 | -20) => void;
   removeShame: (entryId: string) => void;
@@ -265,30 +265,31 @@ export const useRoomStore = create<RoomState>((set, get) => {
       wsClient.send({ type: 'start-game', playerId: get().myPlayerId });
     },
 
-    async submitBid(bid, harryAdjustment = 0) {
-      wsClient.send({ type: 'submit-bid', playerId: get().myPlayerId, bid, harryAdjustment });
+    async submitBid(bid, harryAdjustment = 0, joker = false) {
+      wsClient.send({ type: 'submit-bid', playerId: get().myPlayerId, bid, harryAdjustment, joker });
     },
 
     async markBidReady() {
       wsClient.send({ type: 'mark-bid-ready', playerId: get().myPlayerId });
     },
 
-    submitBidForPlayer(targetPlayerId, bid, harryAdjustment = 0) {
-      wsClient.send({ type: 'submit-bid', playerId: get().myPlayerId, targetPlayerId, bid, harryAdjustment });
+    submitBidForPlayer(targetPlayerId, bid, harryAdjustment = 0, joker = false) {
+      wsClient.send({ type: 'submit-bid', playerId: get().myPlayerId, targetPlayerId, bid, harryAdjustment, joker });
     },
 
     markBidReadyForPlayer(targetPlayerId) {
       wsClient.send({ type: 'mark-bid-ready', playerId: get().myPlayerId, targetPlayerId });
     },
 
-    submitResultForPlayer(targetPlayerId, { tricks, bonus, harryAdjustment = 0, specials }) {
+    submitResultForPlayer(targetPlayerId, { tricks, bonusDetails, harryAdjustment = 0, jokerSuccess = false, specials }) {
       const room = get().room;
       if (!room) return;
       const targetBid = get().bids.find(b => b.player_id === targetPlayerId && b.round_number === room.current_round);
       const bidVal = targetBid?.bid ?? 0;
+      const bonus = bonusDetails.reduce((s, n) => s + n, 0);
       const config = presets[room.scoring_preset_id as keyof typeof presets] ?? presets.standard;
-      const score = calculateScore(bidVal + harryAdjustment, tricks, room.current_round, bonus, config);
-      wsClient.send({ type: 'submit-result', playerId: get().myPlayerId, targetPlayerId, tricks, bonus, specials, score });
+      const score = calculateScore(bidVal + harryAdjustment, tricks, room.current_round, bonus, config, jokerSuccess);
+      wsClient.send({ type: 'submit-result', playerId: get().myPlayerId, targetPlayerId, tricks, bonus, bonusDetails, specials, score, jokerSuccess });
     },
 
     markResultDoneForPlayer(targetPlayerId) {
@@ -299,7 +300,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
       wsClient.send({ type: 'advance-to-scoring', playerId: get().myPlayerId });
     },
 
-    async submitResult({ tricks, bonus, harryAdjustment = 0, specials }) {
+    async submitResult({ tricks, bonusDetails, harryAdjustment = 0, jokerSuccess = false, specials }) {
       const room = get().room;
       if (!room) return;
       const myId = get().myPlayerId;
@@ -307,16 +308,19 @@ export const useRoomStore = create<RoomState>((set, get) => {
         b => b.player_id === myId && b.round_number === room.current_round
       );
       const bidVal = myBid?.bid ?? 0;
+      const bonus = bonusDetails.reduce((s, n) => s + n, 0);
       const config = presets[room.scoring_preset_id as keyof typeof presets] ?? presets.standard;
-      const score = calculateScore(bidVal + harryAdjustment, tricks, room.current_round, bonus, config);
+      const score = calculateScore(bidVal + harryAdjustment, tricks, room.current_round, bonus, config, jokerSuccess);
 
       wsClient.send({
         type: 'submit-result',
         playerId: myId,
         tricks,
         bonus,
+        bonusDetails,
         specials,
         score,
+        jokerSuccess,
       });
     },
 
@@ -338,14 +342,15 @@ export const useRoomStore = create<RoomState>((set, get) => {
       wsClient.send({ type: 'end-game', playerId: get().myPlayerId });
     },
 
-    hostOverrideResult(targetPlayerId, { tricks, bonus, harryAdjustment = 0, specials }, roundNumber) {
+    hostOverrideResult(targetPlayerId, { tricks, bonusDetails, harryAdjustment = 0, jokerSuccess = false, specials }, roundNumber) {
       const room = get().room;
       if (!room) return;
       const rNum = roundNumber ?? room.current_round;
       const targetBid = get().bids.find(b => b.player_id === targetPlayerId && b.round_number === rNum);
       const bidVal = targetBid?.bid ?? 0;
+      const bonus = bonusDetails.reduce((s, n) => s + n, 0);
       const config = presets[room.scoring_preset_id as keyof typeof presets] ?? presets.standard;
-      const score = calculateScore(bidVal + harryAdjustment, tricks, rNum, bonus, config);
+      const score = calculateScore(bidVal + harryAdjustment, tricks, rNum, bonus, config, jokerSuccess);
       wsClient.send({
         type: 'host-override-result',
         playerId: get().myPlayerId,
@@ -353,9 +358,11 @@ export const useRoomStore = create<RoomState>((set, get) => {
         roundNumber: rNum,
         tricks,
         bonus,
+        bonusDetails,
         harryAdjustment,
         specials,
         score,
+        jokerSuccess,
       });
     },
 

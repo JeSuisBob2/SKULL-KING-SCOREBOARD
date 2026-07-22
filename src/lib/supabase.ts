@@ -39,6 +39,7 @@ export interface RoomBidRow {
   player_id: string;
   bid: number | null;
   harry_adjustment: number;
+  joker?: boolean;
   is_ready: boolean;
   ready_at: string | null;
 }
@@ -66,7 +67,9 @@ export interface RoomResultRow {
   player_id: string;
   tricks: number;
   bonus: number;
+  bonus_details?: number[];
   specials: Record<string, { positive: number; negative: number }>;
   score: number;
+  joker_success?: boolean;
   is_done: boolean;
 }

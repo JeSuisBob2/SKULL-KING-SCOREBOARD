@@ -6,10 +6,10 @@ interface Props {
 }
 
 /**
- * Pouces 👍/👎 sur un joueur pour la manche en cours.
- * Chaque joueur peut donner un seul pouce (levé OU baissé) par cible et par manche ;
- * re-cliquer sur son pouce le retire. Les compteurs affichent le total reçu.
- * Le reset à la manche suivante est automatique (les pouces sont liés au numéro de manche).
+ * Pouces 👍/👎 sur un joueur pour la manche en cours (affichés en phase de révélation).
+ * Chaque joueur ne peut sélectionner qu'UN seul joueur par manche : choisir une nouvelle
+ * cible déplace automatiquement le pouce (côté serveur). Re-cliquer le retire.
+ * Le reset à la manche suivante est automatique (pouces liés au numéro de manche).
  */
 export default function ThumbButtons({ targetId, round }: Props) {
   const { thumbs, myPlayerId, setThumb } = useRoomStore();

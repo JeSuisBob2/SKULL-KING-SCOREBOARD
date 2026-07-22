@@ -37,6 +37,7 @@ interface Bid {
   player_id: string;
   bid: number | null;
   harry_adjustment: number;
+  joker?: boolean;
   is_ready: boolean;
   ready_at: string | null;
 }
@@ -48,9 +49,16 @@ interface Result {
   player_id: string;
   tricks: number;
   bonus: number;
+  bonus_details?: number[];
   specials: Record<string, unknown>;
   score: number;
+  joker_success?: boolean;
   is_done: boolean;
+}
+
+/** Nettoie une liste de bonus reçue du client (nombres finis non nuls uniquement). */
+function cleanBonusDetails(raw: unknown): number[] {
+  return Array.isArray(raw) ? raw.map(Number).filter(n => Number.isFinite(n) && n !== 0) : [];
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -176,9 +184,10 @@ function broadcastState(roomCode: string) {
 
     if (room.status === 'bidding') {
       // Mask bid values only for the current round (past rounds stay visible for ScoreOverview editing)
+      // Le joker est masqué aussi : il n'est révélé qu'à la phase de révélation.
       filteredBids = bids.map(b =>
         b.round_number === room.current_round && b.player_id !== player.id
-          ? { ...b, bid: null }
+          ? { ...b, bid: null, joker: false }
           : b
       );
     }
@@ -446,6 +455,7 @@ function handleMessage(ws: any, raw: string) {
       if (existing) {
         existing.bid = msg.bid ?? null;
         existing.harry_adjustment = Number(msg.harryAdjustment) || 0;
+        existing.joker = !!msg.joker;
         existing.is_ready = false;
       } else {
         bids.push({
@@ -455,6 +465,7 @@ function handleMessage(ws: any, raw: string) {
           player_id: targetId,
           bid: msg.bid ?? null,
           harry_adjustment: Number(msg.harryAdjustment) || 0,
+          joker: !!msg.joker,
           is_ready: false,
           ready_at: null,
         });
@@ -599,8 +610,10 @@ function handleMessage(ws: any, raw: string) {
       const entry = {
         tricks : Number(msg.tricks)  || 0,
         bonus  : Number(msg.bonus)   || 0,
+        bonus_details: cleanBonusDetails(msg.bonusDetails),
         specials: msg.specials ?? {},
         score  : Number(msg.score)   || 0,
+        joker_success: !!msg.jokerSuccess,
         is_done: false,
       };
 
@@ -661,8 +674,10 @@ function handleMessage(ws: any, raw: string) {
       const entry = {
         tricks:  Number(msg.tricks)  || 0,
         bonus:   Number(msg.bonus)   || 0,
+        bonus_details: cleanBonusDetails(msg.bonusDetails),
         specials: msg.specials ?? {},
         score:   Number(msg.score)   || 0,
+        joker_success: !!msg.jokerSuccess,
         is_done: true,
       };
 
@@ -790,9 +805,10 @@ function handleMessage(ws: any, raw: string) {
       if (dir !== 1 && dir !== -1 && dir !== 0) return;
 
       const thumbs = roomThumbs.get(code) ?? [];
-      // Un seul pouce par donneur et par cible pour la manche en cours
+      // Un seul pouce par joueur et par manche, toutes cibles confondues :
+      // choisir un joueur retire automatiquement le pouce mis sur un autre.
       const filtered = thumbs.filter(
-        t => !(t.round === room.current_round && t.fromId === playerId && t.toId === targetId)
+        t => !(t.round === room.current_round && t.fromId === playerId)
       );
       if (dir !== 0) {
         filtered.push({ id: uid(), round: room.current_round, fromId: playerId, toId: targetId, dir: dir as 1 | -1 });

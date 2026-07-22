@@ -12,7 +12,7 @@ import ExcelJS from 'exceljs';
 
 import ShameBag from '../components/ShameBag';
 import SurrenderDialog from '../components/SurrenderDialog';
-import ThumbButtons from '../components/ThumbButtons';
+import BonusEditor, { sumBonus } from '../components/BonusEditor';
 
 const EMPTY_SPECIALS = () => ({
   skullKing: { positive: 0, negative: 0 },
@@ -30,15 +30,16 @@ const EMPTY_SPECIALS = () => ({
 export default function RoomResults() {
   const nav = useNavigate();
   const { roomId, roundNumber } = useParams();
-  const { room, bids, results, shameLog, myPlayerId, kicked, subscribeToRoom, unsubscribeFromRoom, submitResult, markResultDone, advanceToNextRound, hostOverrideResult, deleteRoom, submitResultForPlayer, markResultDoneForPlayer, shamePenalty, removeShame, surrender, takeControl } = useRoomStore();
+  const { room, bids, results, shameLog, thumbs, myPlayerId, kicked, subscribeToRoom, unsubscribeFromRoom, submitResult, markResultDone, advanceToNextRound, hostOverrideResult, deleteRoom, submitResultForPlayer, markResultDoneForPlayer, shamePenalty, removeShame, surrender, takeControl } = useRoomStore();
   const [surrenderOpen, setSurrenderOpen] = useState(false);
 
   const rNum = Number(roundNumber || 1);
   const isHost = room?.host_player_id === myPlayerId;
 
   const [tricks, setTricks] = useState(0);
-  const [bonus, setBonus] = useState(0);
+  const [bonusDetails, setBonusDetails] = useState<number[]>([]);
   const [harryAdj, setHarryAdj] = useState(0);
+  const [jokerSuccess, setJokerSuccess] = useState(false);
   const [specials, setSpecials] = useState(EMPTY_SPECIALS());
   const [collapsedSpecials, setCollapsedSpecials] = useState(true);
   const [pending, setPending] = useState(false);
@@ -48,11 +49,11 @@ export default function RoomResults() {
   const myResult = results.find(r => r.player_id === myPlayerId && r.round_number === rNum);
   const submitted = !!myResult?.is_done || pending;
   const [showStandings, setShowStandings] = useState(false);
-  const [managedData, setManagedData] = useState<Record<string, { tricks: number; bonus: number; harryAdj: number; specials: any }>>({});
+  const [managedData, setManagedData] = useState<Record<string, { tricks: number; bonusDetails: number[]; harryAdj: number; jokerSuccess: boolean; specials: any }>>({});
   const [managedDone, setManagedDone] = useState<Record<string, boolean>>({});
   const [managedCollapsed, setManagedCollapsed] = useState<Record<string, boolean>>({});
   const [editMode, setEditMode] = useState(false);
-  const [editData, setEditData] = useState<Record<string, { tricks: number; bonus: number; harryAdj: number; specials: any }>>({});
+  const [editData, setEditData] = useState<Record<string, { tricks: number; bonusDetails: number[]; harryAdj: number; jokerSuccess: boolean; specials: any }>>({});
   const [collapsedEdit, setCollapsedEdit] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -70,7 +71,8 @@ export default function RoomResults() {
     if (existing) {
       loadedRoundRef.current = rNum;
       setTricks(existing.tricks);
-      setBonus(existing.bonus);
+      setBonusDetails(existing.bonus_details ?? (existing.bonus ? [existing.bonus] : []));
+      setJokerSuccess(existing.joker_success ?? false);
       if (existing.specials && Object.keys(existing.specials).length > 0) {
         setSpecials({ ...EMPTY_SPECIALS(), ...existing.specials });
       }
@@ -123,11 +125,11 @@ export default function RoomResults() {
   const myBid = bids.find(b => b.player_id === myPlayerId && b.round_number === rNum);
   const config = presets[room?.scoring_preset_id ?? 'standard'] ?? presets.standard;
   const effectiveBid = (myBid?.bid ?? 0) + harryAdj;
-  const projectedScore = calculateScore(effectiveBid, tricks, rNum, bonus, config);
+  const projectedScore = calculateScore(effectiveBid, tricks, rNum, sumBonus(bonusDetails), config, jokerSuccess);
 
   const handleSubmit = async () => {
     setPending(true);
-    await submitResult({ tricks, bonus, harryAdjustment: harryAdj, specials });
+    await submitResult({ tricks, bonusDetails, harryAdjustment: harryAdj, jokerSuccess, specials });
     await markResultDone();
     // Filet de sécurité : si le serveur n'a pas confirmé après 6s (message perdu),
     // on réaffiche le formulaire — la saisie est conservée, il suffit de re-valider.
@@ -256,8 +258,9 @@ export default function RoomResults() {
       const b = bids.find(x => x.player_id === p.id && x.round_number === rNum);
       data[p.id] = {
         tricks: r?.tricks ?? 0,
-        bonus: r?.bonus ?? 0,
+        bonusDetails: r?.bonus_details ?? (r?.bonus ? [r.bonus] : []),
         harryAdj: b?.harry_adjustment ?? 0,
+        jokerSuccess: r?.joker_success ?? false,
         specials: r?.specials ? { ...EMPTY_SPECIALS(), ...r.specials } : EMPTY_SPECIALS(),
       };
       collapsed[p.id] = true;
@@ -271,7 +274,7 @@ export default function RoomResults() {
     for (const p of room.players) {
       const d = editData[p.id];
       if (!d) continue;
-      hostOverrideResult(p.id, { tricks: d.tricks, bonus: d.bonus, harryAdjustment: d.harryAdj, specials: d.specials });
+      hostOverrideResult(p.id, { tricks: d.tricks, bonusDetails: d.bonusDetails, harryAdjustment: d.harryAdj, jokerSuccess: d.jokerSuccess, specials: d.specials });
     }
     setEditMode(false);
   };
@@ -347,6 +350,7 @@ export default function RoomResults() {
           <div className="card p-4 space-y-4">
             <div className="section-title">
               Mes résultats · Pari : {myBid?.bid ?? 0}
+              {myBid?.joker && ' · 🃏 Joker'}
               {harryAdj !== 0 && ` (Harry ${harryAdj > 0 ? '+' : ''}${harryAdj})`}
             </div>
 
@@ -364,22 +368,35 @@ export default function RoomResults() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between">
-              <span>Bonus</span>
-              <div className="flex items-center gap-1">
-                {[-20, -10, -5].map(delta => (
-                  <button key={delta} className="btn btn-ghost text-sm px-2 py-1" onClick={() => setBonus(v => v + delta)}>
-                    {delta}
-                  </button>
-                ))}
-                <span className="w-10 text-center tabular-nums">{bonus}</span>
-                {[+5, +10, +20].map(delta => (
-                  <button key={delta} className="btn btn-ghost text-sm px-2 py-1" onClick={() => setBonus(v => v + delta)}>
-                    +{delta}
-                  </button>
-                ))}
+            {/* Question Joker — uniquement si le joueur a déclaré Joker avec un pari à 0 */}
+            {myBid?.joker && myBid?.bid === 0 && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <span>🃏 Joker débarrassé ?</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                        jokerSuccess ? 'bg-emerald-500/40 ring-1 ring-emerald-400 text-white' : 'bg-white/10 opacity-60 hover:opacity-100'
+                      }`}
+                      onClick={() => setJokerSuccess(true)}
+                    >
+                      Oui
+                    </button>
+                    <button
+                      className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                        !jokerSuccess ? 'bg-red-500/40 ring-1 ring-red-400 text-white' : 'bg-white/10 opacity-60 hover:opacity-100'
+                      }`}
+                      onClick={() => setJokerSuccess(false)}
+                    >
+                      Non
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs opacity-50 mt-1">+20 pts si tu t'en es débarrassé en réussissant ton contrat à 0</p>
               </div>
-            </div>
+            )}
+
+            <BonusEditor details={bonusDetails} onChange={setBonusDetails} />
 
             {/* Special cards */}
             <div>
@@ -456,9 +473,21 @@ export default function RoomResults() {
                     <div className="font-medium">{p.name}</div>
                     <div className="text-xs opacity-60">
                       Pari {b?.bid ?? '?'} · Plis {r?.tricks ?? '?'}
-                    </div>
-                    <div className="mt-2">
-                      <ThumbButtons targetId={p.id} round={rNum} />
+                      {r != null && (r.bonus_details?.length ?? 0) > 0 ? (
+                        <span>
+                          {' '}· Bonus{' '}
+                          {r.bonus_details!.map((v, i) => (
+                            <span key={i} className={v > 0 ? 'text-emerald-400' : 'text-red-400'}>
+                              {v > 0 ? `+${v}` : v}{i < r.bonus_details!.length - 1 ? ' ' : ''}
+                            </span>
+                          ))}
+                        </span>
+                      ) : r != null && r.bonus !== 0 ? (
+                        <span className={r.bonus > 0 ? 'text-emerald-400' : 'text-red-400'}>
+                          {' '}· Bonus {r.bonus > 0 ? `+${r.bonus}` : r.bonus}
+                        </span>
+                      ) : null}
+                      {b?.joker && b?.bid === 0 && (r?.joker_success ? ' · 🃏 +20' : ' · 🃏 ✗')}
                     </div>
                   </div>
                   <div className="text-right">
@@ -494,9 +523,9 @@ export default function RoomResults() {
             </div>
 
             {activePlayers.map(p => {
-              const d = editData[p.id] ?? { tricks: 0, bonus: 0, harryAdj: 0, specials: EMPTY_SPECIALS() };
+              const d = editData[p.id] ?? { tricks: 0, bonusDetails: [], harryAdj: 0, jokerSuccess: false, specials: EMPTY_SPECIALS() };
               const b = bids.find(x => x.player_id === p.id && x.round_number === rNum);
-              const projected = calculateScore((b?.bid ?? 0) + d.harryAdj, d.tricks, rNum, d.bonus, config);
+              const projected = calculateScore((b?.bid ?? 0) + d.harryAdj, d.tricks, rNum, sumBonus(d.bonusDetails), config, d.jokerSuccess);
               return (
                 <div key={p.id} className="card p-4 space-y-3">
                   <div className="flex items-center justify-between">
@@ -518,22 +547,27 @@ export default function RoomResults() {
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between">
-                    <span>Bonus</span>
-                    <div className="flex items-center gap-1">
-                      {[-20, -10, -5].map(delta => (
-                        <button key={delta} className="btn btn-ghost text-sm px-2 py-1" onClick={() => setEdit(p.id, 'bonus', d.bonus + delta)}>
-                          {delta}
+                  {b?.joker && b?.bid === 0 && (
+                    <div className="flex items-center justify-between">
+                      <span>🃏 Joker débarrassé ?</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${d.jokerSuccess ? 'bg-emerald-500/40 ring-1 ring-emerald-400 text-white' : 'bg-white/10 opacity-60 hover:opacity-100'}`}
+                          onClick={() => setEdit(p.id, 'jokerSuccess', true)}
+                        >
+                          Oui
                         </button>
-                      ))}
-                      <span className="w-10 text-center tabular-nums">{d.bonus}</span>
-                      {[+5, +10, +20].map(delta => (
-                        <button key={delta} className="btn btn-ghost text-sm px-2 py-1" onClick={() => setEdit(p.id, 'bonus', d.bonus + delta)}>
-                          +{delta}
+                        <button
+                          className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${!d.jokerSuccess ? 'bg-red-500/40 ring-1 ring-red-400 text-white' : 'bg-white/10 opacity-60 hover:opacity-100'}`}
+                          onClick={() => setEdit(p.id, 'jokerSuccess', false)}
+                        >
+                          Non
                         </button>
-                      ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
+
+                  <BonusEditor details={d.bonusDetails} onChange={v => setEdit(p.id, 'bonusDetails', v)} />
 
                   <div>
                     <button
@@ -588,10 +622,10 @@ export default function RoomResults() {
 
         {/* Managed players results (host only, scoring phase) */}
         {isHost && room.status === 'scoring' && room.players.filter(p => p.managedByHost && !p.surrendered).map(p => {
-          const d = managedData[p.id] ?? { tricks: 0, bonus: 0, harryAdj: 0, specials: EMPTY_SPECIALS() };
+          const d = managedData[p.id] ?? { tricks: 0, bonusDetails: [], harryAdj: 0, jokerSuccess: false, specials: EMPTY_SPECIALS() };
           const b = bids.find(x => x.player_id === p.id && x.round_number === rNum);
           const isDone = managedDone[p.id] ?? results.find(r => r.player_id === p.id && r.round_number === rNum)?.is_done ?? false;
-          const projected = calculateScore((b?.bid ?? 0) + d.harryAdj, d.tricks, rNum, d.bonus, config);
+          const projected = calculateScore((b?.bid ?? 0) + d.harryAdj, d.tricks, rNum, sumBonus(d.bonusDetails), config, d.jokerSuccess);
           const setD = (key: string, val: any) => setManagedData(s => ({ ...s, [p.id]: { ...s[p.id] ?? d, [key]: val } }));
 
           return (
@@ -611,22 +645,27 @@ export default function RoomResults() {
                       <button className="btn btn-ghost px-3" onClick={() => setD('harryAdj', Math.min(2, d.harryAdj + 1))}>+1</button>
                     </div>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span>Bonus</span>
-                    <div className="flex items-center gap-1">
-                      {[-20, -10, -5].map(delta => (
-                        <button key={delta} className="btn btn-ghost text-sm px-2 py-1" onClick={() => setD('bonus', d.bonus + delta)}>
-                          {delta}
+
+                  {b?.joker && b?.bid === 0 && (
+                    <div className="flex items-center justify-between">
+                      <span>🃏 Joker débarrassé ?</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${d.jokerSuccess ? 'bg-emerald-500/40 ring-1 ring-emerald-400 text-white' : 'bg-white/10 opacity-60 hover:opacity-100'}`}
+                          onClick={() => setD('jokerSuccess', true)}
+                        >
+                          Oui
                         </button>
-                      ))}
-                      <span className="w-10 text-center tabular-nums">{d.bonus}</span>
-                      {[+5, +10, +20].map(delta => (
-                        <button key={delta} className="btn btn-ghost text-sm px-2 py-1" onClick={() => setD('bonus', d.bonus + delta)}>
-                          +{delta}
+                        <button
+                          className={`px-3 py-1 rounded-lg text-sm font-semibold transition-colors ${!d.jokerSuccess ? 'bg-red-500/40 ring-1 ring-red-400 text-white' : 'bg-white/10 opacity-60 hover:opacity-100'}`}
+                          onClick={() => setD('jokerSuccess', false)}
+                        >
+                          Non
                         </button>
-                      ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
+                  <BonusEditor details={d.bonusDetails} onChange={v => setD('bonusDetails', v)} />
                   <div>
                     <button
                       className="w-full flex items-center justify-between text-sm py-2"
@@ -669,7 +708,7 @@ export default function RoomResults() {
                   <button
                     className="btn btn-ghost w-full"
                     onClick={() => {
-                      submitResultForPlayer(p.id, { tricks: d.tricks, bonus: d.bonus, harryAdjustment: d.harryAdj, specials: d.specials });
+                      submitResultForPlayer(p.id, { tricks: d.tricks, bonusDetails: d.bonusDetails, harryAdjustment: d.harryAdj, jokerSuccess: d.jokerSuccess, specials: d.specials });
                       markResultDoneForPlayer(p.id);
                       setManagedDone(s => ({ ...s, [p.id]: true }));
                     }}
@@ -713,7 +752,6 @@ export default function RoomResults() {
                       {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
                     </span>
                     <div className="flex items-center gap-2">
-                      <ThumbButtons targetId={p.id} round={rNum} />
                       {isHost && disconnected && !r?.is_done && (
                         <button
                           className="text-xs px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 transition-colors"
@@ -741,16 +779,27 @@ export default function RoomResults() {
               🏆 Partie terminée !
             </div>
 
-            {standings.map(({ player, total }, i) => (
-              <div key={player.id} className={`card p-4 flex items-center justify-between ${i === 0 && !player.surrendered ? 'ring-2 ring-yellow-400 shadow-[0_0_16px_4px_#facc1533]' : ''} ${player.surrendered ? 'opacity-50' : ''}`}>
-                <div className="flex items-center gap-3">
-                  <span className="text-2xl">{['👑', '🏴‍☠️', '🧜‍♀️', '👶'][i] ?? `${i + 1}.`}</span>
-                  <span className={`font-semibold ${player.surrendered ? 'line-through' : ''}`}>{player.name}</span>
-                  {player.surrendered && <span className="text-xs italic text-red-300">🏳️ Abandonné</span>}
+            {standings.map(({ player, total }, i) => {
+              // Cumul des pouces reçus sur toute la partie
+              const thumbsUp = thumbs.filter(t => t.toId === player.id && t.dir === 1).length;
+              const thumbsDown = thumbs.filter(t => t.toId === player.id && t.dir === -1).length;
+              return (
+                <div key={player.id} className={`card p-4 flex items-center justify-between ${i === 0 && !player.surrendered ? 'ring-2 ring-yellow-400 shadow-[0_0_16px_4px_#facc1533]' : ''} ${player.surrendered ? 'opacity-50' : ''}`}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">{['👑', '🏴‍☠️', '🧜‍♀️', '👶'][i] ?? `${i + 1}.`}</span>
+                    <div>
+                      <span className={`font-semibold ${player.surrendered ? 'line-through' : ''}`}>{player.name}</span>
+                      {player.surrendered && <span className="ml-2 text-xs italic text-red-300">🏳️ Abandonné</span>}
+                      <div className="text-sm mt-0.5">
+                        <span className="text-emerald-300">👍 {thumbsUp}</span>
+                        <span className="ml-3 text-red-300">👎 {thumbsDown}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <span className="text-xl font-bold text-white">{total}</span>
                 </div>
-                <span className="text-xl font-bold text-white">{total}</span>
-              </div>
-            ))}
+              );
+            })}
 
             <button
               className="btn btn-ghost w-full"

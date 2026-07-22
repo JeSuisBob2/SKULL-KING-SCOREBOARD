@@ -5,11 +5,14 @@ export function calculateScore(
   tricks: number,
   roundNumber: number,
   bonus: number,
-  config: ScoringConfig
+  config: ScoringConfig,
+  jokerSuccess = false
 ): number {
   if (bid === 0) {
+    // jokerSuccess = le joueur déclare s'être débarrassé de son Joker (saisi aux résultats).
+    // Le +20 ne s'applique que si le contrat à 0 est aussi réussi.
     return tricks === 0
-      ? config.zeroBidMultiplier * roundNumber + bonus
+      ? config.zeroBidMultiplier * roundNumber + bonus + (jokerSuccess ? 20 : 0)
       : -config.zeroBidFailMultiplier * roundNumber + bonus;
   }
   if (bid === tricks) {

@@ -32,11 +32,13 @@ export default function RoomBets() {
 
   const [myBid, setMyBid] = useState(0);
   const [myHarry, setMyHarry] = useState(0);
+  const [myJoker, setMyJoker] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [showMyBid, setShowMyBid] = useState(false);
   const [showStandings, setShowStandings] = useState(false);
   const [managedBids, setManagedBids] = useState<Record<string, number>>({});
   const [managedHarry, setManagedHarry] = useState<Record<string, number>>({});
+  const [managedJoker, setManagedJoker] = useState<Record<string, boolean>>({});
   const [managedSubmitted, setManagedSubmitted] = useState<Record<string, boolean>>({});
 
   // Track if player was previously submitted to detect rollback vs first load
@@ -54,6 +56,7 @@ export default function RoomBets() {
     wasSubmittedManagedRef.current = {};
     setMyBid(0);
     setMyHarry(0);
+    setMyJoker(false);
     setSubmitted(false);
   }, [rNum]);
 
@@ -63,6 +66,7 @@ export default function RoomBets() {
     if (existing) {
       if (existing.bid !== null) setMyBid(existing.bid);
       setMyHarry(existing.harry_adjustment ?? 0);
+      setMyJoker(existing.joker ?? false);
       setSubmitted(existing.is_ready);
       wasSubmittedRef.current = existing.is_ready;
     } else {
@@ -70,6 +74,7 @@ export default function RoomBets() {
       if (wasSubmittedRef.current) {
         setMyBid(0);
         setMyHarry(0);
+        setMyJoker(false);
       }
       setSubmitted(false);
       wasSubmittedRef.current = false;
@@ -85,6 +90,7 @@ export default function RoomBets() {
             next[p.id] = bid.is_ready;
             if (bid.bid !== null) setManagedBids(s => ({ ...s, [p.id]: bid.bid! }));
             setManagedHarry(s => ({ ...s, [p.id]: bid.harry_adjustment ?? 0 }));
+            setManagedJoker(s => ({ ...s, [p.id]: bid.joker ?? false }));
             wasSubmittedManagedRef.current[p.id] = bid.is_ready;
           } else {
             next[p.id] = false;
@@ -92,6 +98,7 @@ export default function RoomBets() {
             if (wasSubmittedManagedRef.current[p.id]) {
               setManagedBids(s => ({ ...s, [p.id]: 0 }));
               setManagedHarry(s => ({ ...s, [p.id]: 0 }));
+              setManagedJoker(s => ({ ...s, [p.id]: false }));
             }
             wasSubmittedManagedRef.current[p.id] = false;
           }
@@ -145,7 +152,7 @@ export default function RoomBets() {
   }, [room, cumulativeScores]);
 
   const handleReady = async () => {
-    await submitBid(myBid, myHarry);
+    await submitBid(myBid, myHarry, myJoker);
     await markBidReady();
     setSubmitted(true);
     // NB : on ne touche PAS à wasSubmittedRef ici — il ne doit refléter que ce que
@@ -238,6 +245,31 @@ export default function RoomBets() {
               <NumberStepper value={myBid} min={0} max={rNum} onChange={setMyBid} />
             </div>
 
+            <div className="flex items-center justify-between">
+              <span>🃏 Joker</span>
+              <div className="flex items-center gap-2">
+                <button
+                  className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                    myJoker ? 'bg-accent/40 ring-1 ring-accent text-white' : 'bg-white/10 opacity-60 hover:opacity-100'
+                  }`}
+                  onClick={() => setMyJoker(true)}
+                >
+                  Oui
+                </button>
+                <button
+                  className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                    !myJoker ? 'bg-accent/40 ring-1 ring-accent text-white' : 'bg-white/10 opacity-60 hover:opacity-100'
+                  }`}
+                  onClick={() => setMyJoker(false)}
+                >
+                  Non
+                </button>
+              </div>
+            </div>
+            {myJoker && (
+              <p className="text-xs opacity-50">🃏 +20 pts si tu te débarrasses du Joker en réussissant un pari à 0 — à confirmer aux résultats</p>
+            )}
+
             <button className="btn btn-primary w-full" onClick={handleReady}>
               Je suis prêt ✓
             </button>
@@ -276,6 +308,7 @@ export default function RoomBets() {
         {isHost && !isRevealing && room.players.filter(p => p.managedByHost && !p.surrendered).map(p => {
           const bid = managedBids[p.id] ?? 0;
           const harry = managedHarry[p.id] ?? 0;
+          const joker = managedJoker[p.id] ?? false;
           const isReady = managedSubmitted[p.id] ?? false;
           return (
             <div key={p.id} className="card p-4 space-y-3 border border-white/20">
@@ -286,10 +319,31 @@ export default function RoomBets() {
                     <span>Pari (0–{rNum})</span>
                     <NumberStepper value={bid} min={0} max={rNum} onChange={v => setManagedBids(s => ({ ...s, [p.id]: v }))} />
                   </div>
+                  <div className="flex items-center justify-between">
+                    <span>🃏 Joker</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                          joker ? 'bg-accent/40 ring-1 ring-accent text-white' : 'bg-white/10 opacity-60 hover:opacity-100'
+                        }`}
+                        onClick={() => setManagedJoker(s => ({ ...s, [p.id]: true }))}
+                      >
+                        Oui
+                      </button>
+                      <button
+                        className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                          !joker ? 'bg-accent/40 ring-1 ring-accent text-white' : 'bg-white/10 opacity-60 hover:opacity-100'
+                        }`}
+                        onClick={() => setManagedJoker(s => ({ ...s, [p.id]: false }))}
+                      >
+                        Non
+                      </button>
+                    </div>
+                  </div>
                   <button
                     className="btn btn-ghost w-full"
                     onClick={() => {
-                      submitBidForPlayer(p.id, bid, harry);
+                      submitBidForPlayer(p.id, bid, harry, joker);
                       markBidReadyForPlayer(p.id);
                       setManagedSubmitted(s => ({ ...s, [p.id]: true }));
                     }}
@@ -338,6 +392,7 @@ export default function RoomBets() {
                   <div>
                     <div className="font-medium">
                       {p.name}
+                      {bid?.joker && bid?.bid === 0 && <span className="ml-2 text-lg" title="Joker montré avec un pari à 0">🃏</span>}
                       {isFirst && <span className="ml-2 text-xs text-accent font-semibold">⚡ commence</span>}
                       {p.id === myPlayerId && <span className="text-xs ml-1 opacity-50">(vous)</span>}
                     </div>
@@ -401,7 +456,6 @@ export default function RoomBets() {
                     {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
                   </span>
                   <div className="flex items-center gap-2">
-                    <ThumbButtons targetId={p.id} round={rNum} />
                     {isHost && disconnected && !bid?.is_ready && (
                       <button
                         className="text-xs px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 transition-colors"
