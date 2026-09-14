@@ -60,6 +60,31 @@ export interface ThumbEntry {
   dir: 1 | -1;
 }
 
+export interface SpectatorInfo {
+  id: string;
+  name: string;
+}
+
+/** Résumé d'une partie terminée, pour la liste de l'historique. */
+export interface HistorySummary {
+  id: string;
+  code: string;
+  finishedAt: string;
+  totalRounds: number;
+  players: { id: string; name: string; total: number; surrendered: boolean }[];
+}
+
+/** Partie terminée complète (conservée 30 jours sur le serveur). */
+export interface HistoryEntry {
+  id: string;
+  finishedAt: string;
+  room: RoomRow;
+  bids: RoomBidRow[];
+  results: RoomResultRow[];
+  shameLog: ShameEntry[];
+  thumbs: ThumbEntry[];
+}
+
 export interface RoomResultRow {
   id: string;
   room_id: string;

@@ -12,11 +12,23 @@ interface Props {
  * Le reset à la manche suivante est automatique (pouces liés au numéro de manche).
  */
 export default function ThumbButtons({ targetId, round }: Props) {
-  const { thumbs, myPlayerId, setThumb } = useRoomStore();
+  const { thumbs, myPlayerId, setThumb, room } = useRoomStore();
 
   const myDir = thumbs.find(t => t.round === round && t.fromId === myPlayerId && t.toId === targetId)?.dir ?? 0;
   const up = thumbs.filter(t => t.round === round && t.toId === targetId && t.dir === 1).length;
   const down = thumbs.filter(t => t.round === round && t.toId === targetId && t.dir === -1).length;
+
+  // Spectateurs : lecture seule — compteurs visibles, pas de vote
+  const isSpectator = room ? !room.players.some(p => p.id === myPlayerId) : false;
+  if (isSpectator) {
+    if (up === 0 && down === 0) return null;
+    return (
+      <span className="inline-flex items-center gap-2 text-sm opacity-70">
+        {up > 0 && <span>👍 <span className="tabular-nums font-semibold text-emerald-300">{up}</span></span>}
+        {down > 0 && <span>👎 <span className="tabular-nums font-semibold text-red-300">{down}</span></span>}
+      </span>
+    );
+  }
 
   return (
     <span className="inline-flex items-center gap-1.5">

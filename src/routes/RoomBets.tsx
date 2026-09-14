@@ -23,7 +23,7 @@ export default function RoomBets() {
     submitBid, markBidReady, advanceToScoring,
     submitBidForPlayer, markBidReadyForPlayer,
     resetMyBid, resetBids, resetBidForPlayer, shamePenalty, removeShame, shameLog,
-    surrender, takeControl,
+    surrender, takeControl, spectators,
   } = useRoomStore();
   const [surrenderOpen, setSurrenderOpen] = useState(false);
 
@@ -164,12 +164,13 @@ export default function RoomBets() {
   const isRevealing = room.status === 'revealing';
   const firstPlayer = activePlayers[(rNum - 1) % Math.max(activePlayers.length, 1)];
   const meSurrendered = room.players.find(p => p.id === myPlayerId)?.surrendered;
+  const isSpectator = !room.players.some(p => p.id === myPlayerId);
 
   return (
     <Layout
       title={`Paris · Manche ${rNum}/${room.total_rounds}`}
       right={
-        !meSurrendered && (
+        !meSurrendered && !isSpectator && (
           <button
             className="text-base opacity-60 hover:opacity-100 transition-opacity"
             onClick={() => setSurrenderOpen(true)}
@@ -181,6 +182,10 @@ export default function RoomBets() {
       }
     >
       <div className="space-y-4">
+
+        {isSpectator && (
+          <div className="card p-2 text-center text-sm opacity-70">👁️ Mode spectateur</div>
+        )}
 
         {/* Who starts this round */}
         <div className="card p-3 text-sm flex items-center gap-2">
@@ -214,8 +219,10 @@ export default function RoomBets() {
           </div>
         )}
 
-        {/* Score history overview — visible dès la manche 1 */}
-        <ScoreOverview room={room} results={results} bids={bids} shameLog={shameLog} myPlayerId={myPlayerId} isHost={isHost} />
+        {/* Vue d'ensemble — cachée aux joueurs pendant les manches 1 à 5, l'hôte la voit toujours */}
+        {(isHost || rNum > 5) && (
+          <ScoreOverview room={room} results={results} bids={bids} shameLog={shameLog} myPlayerId={myPlayerId} isHost={isHost} />
+        )}
 
         {/* Ready status bar */}
         <div className="card p-3 flex items-center justify-between">
@@ -236,7 +243,7 @@ export default function RoomBets() {
         </div>
 
         {/* My bid input */}
-        {!submitted && !isRevealing && !meSurrendered && (
+        {!submitted && !isRevealing && !meSurrendered && !isSpectator && (
           <div className="card p-4 space-y-4">
             <div className="section-title">Mon pari — Manche {rNum}</div>
 
@@ -436,6 +443,11 @@ export default function RoomBets() {
         {/* Players status list */}
         <div className="card p-4">
           <div className="section-title mb-2">Statut</div>
+          {spectators.length > 0 && (
+            <div className="text-xs opacity-60 mb-2">
+              👁️ Spectateurs : {spectators.map(s => s.name).join(', ')}
+            </div>
+          )}
           <ul className="space-y-1">
             {room.players.map(p => {
               const bid = currentRoundBids.find(b => b.player_id === p.id);
@@ -450,11 +462,14 @@ export default function RoomBets() {
               const disconnected = p.connected === false && !p.managedByHost;
               return (
                 <li key={p.id} className="flex items-center justify-between text-sm">
-                  <span>
-                    {p.name}
-                    {disconnected && <span className="ml-1 text-xs" title="Déconnecté">📵</span>}
-                    {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span>
+                      {p.name}
+                      {disconnected && <span className="ml-1 text-xs" title="Déconnecté">📵</span>}
+                      {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
+                    </span>
+                    <ThumbButtons targetId={p.id} round={rNum} />
+                  </div>
                   <div className="flex items-center gap-2">
                     {isHost && disconnected && !bid?.is_ready && (
                       <button

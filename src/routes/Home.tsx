@@ -1,15 +1,17 @@
 import { Link, useNavigate } from 'react-router-dom';
 import Layout from '../components/Layout';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import HistoryList from '../components/HistoryList';
 import { useStore } from '../store/useStore';
 import { useRoomStore } from '../store/useRoomStore';
 
 export default function Home() {
   const nav = useNavigate();
   const { games, loadGames, deleteGame } = useStore();
-  const { room, kicked, clearRoom } = useRoomStore();
+  const { room, kicked, excluded, clearRoom } = useRoomStore();
 
   const activeRoomCode = room?.code ?? localStorage.getItem('skullking-active-room');
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     loadGames();
@@ -29,6 +31,16 @@ export default function Home() {
         {kicked && (
           <div className="card p-4 border border-red-500/50 bg-red-950/30 flex items-center justify-between gap-3">
             <div className="text-sm text-red-400">⛔ Vous avez été expulsé de la salle par l'hôte.</div>
+            <button className="text-xs opacity-60 hover:opacity-100" onClick={() => clearRoom()}>✕</button>
+          </div>
+        )}
+
+        {/* Excluded by draw notification */}
+        {excluded && (
+          <div className="card p-4 border border-yellow-500/50 bg-yellow-950/30 flex items-center justify-between gap-3">
+            <div className="text-sm text-yellow-300">
+              🎲 Dommage pour toi on est trop cordialement.
+            </div>
             <button className="text-xs opacity-60 hover:opacity-100" onClick={() => clearRoom()}>✕</button>
           </div>
         )}
@@ -76,6 +88,23 @@ export default function Home() {
             <Link to="/new" className="btn btn-primary">Démarrer</Link>
           </div>
         )}
+
+        {/* Historique des parties multijoueur (30 derniers jours, stocké sur le serveur) — se déplie sur place */}
+        <button
+          onClick={() => setHistoryOpen(v => !v)}
+          aria-expanded={historyOpen}
+          className="card p-4 w-full text-left flex items-center justify-between gap-3 hover:bg-white/5 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">📜</span>
+            <div>
+              <div className="font-semibold">Historique des parties</div>
+              <div className="text-xs opacity-60">Les parties multijoueur des 30 derniers jours</div>
+            </div>
+          </div>
+          <span className="text-sm opacity-60">{historyOpen ? '▲' : '▼'}</span>
+        </button>
+        {historyOpen && <HistoryList />}
 
         <ul className="space-y-3">
           {games.map((g) => (

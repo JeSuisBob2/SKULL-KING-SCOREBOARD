@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { wsClient } from '../lib/ws';
-import { RoomRow, RoomBidRow, RoomResultRow, RoomPlayer, ShameEntry, ThumbEntry } from '../lib/supabase';
+import { RoomRow, RoomBidRow, RoomResultRow, RoomPlayer, ShameEntry, ThumbEntry, SpectatorInfo, HistorySummary, HistoryEntry } from '../lib/supabase';
 import { calculateScore } from '../lib/score';
 import { presets } from '../config/scoringConfig';
 import { uid } from '../lib/utils';
@@ -31,14 +31,21 @@ interface RoomState {
   results: RoomResultRow[];
   shameLog: ShameEntry[];
   thumbs: ThumbEntry[];
+  spectators: SpectatorInfo[];
+  history: HistorySummary[] | null;   // null = pas encore chargé
+  historyDetails: Record<string, HistoryEntry | null>;   // absent = pas chargé, null = introuvable
+  loadHistory: () => void;
+  loadHistoryGame: (gameId: string) => void;
   loading: boolean;
   error: string | null;
   kicked: boolean;
+  excluded: boolean;
 
   init: () => void;
   setMyPlayerName: (name: string) => void;
   createRoom: (config: { totalRounds: number; scoringPresetId: string; players: RoomPlayer[] }) => Promise<string>;
   joinRoom: (code: string, playerName: string) => Promise<void>;
+  spectateRoom: (code: string, playerName: string) => Promise<void>;
   loadRoomByCode: (code: string) => Promise<RoomRow | null>;
   resetMyBid: () => void;
   resetBids: () => void;
@@ -109,7 +116,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
 
   // WS event listeners (registered once at store creation)
   wsClient.on('state', (msg) => {
-    set({ room: msg.room, bids: msg.bids ?? [], results: msg.results ?? [], shameLog: msg.shameLog ?? [], thumbs: msg.thumbs ?? [], loading: false, error: null });
+    set({ room: msg.room, bids: msg.bids ?? [], results: msg.results ?? [], shameLog: msg.shameLog ?? [], thumbs: msg.thumbs ?? [], spectators: msg.spectators ?? [], loading: false, error: null });
     if (msg.room?.code) localStorage.setItem('skullking-active-room', msg.room.code);
     resolvePending();
   });
@@ -122,19 +129,32 @@ export const useRoomStore = create<RoomState>((set, get) => {
   wsClient.on('room-deleted', () => {
     wsClient.disconnect();
     localStorage.removeItem('skullking-active-room');
-    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], error: null });
+    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], spectators: [], error: null });
   });
 
   wsClient.on('kicked', () => {
     wsClient.disconnect();
     localStorage.removeItem('skullking-active-room');
-    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], error: null, kicked: true });
+    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], spectators: [], error: null, kicked: true });
+  });
+
+  // Historique des parties terminées
+  wsClient.on('history-list', (msg) => set({ history: msg.entries ?? [] }));
+  wsClient.on('history-game', (msg) =>
+    set(s => ({ historyDetails: { ...s.historyDetails, [msg.gameId]: msg.entry ?? null } }))
+  );
+
+  // Exclu par tirage au sort (plus de 8 joueurs au démarrage)
+  wsClient.on('excluded', () => {
+    wsClient.disconnect();
+    localStorage.removeItem('skullking-active-room');
+    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], spectators: [], error: null, excluded: true });
   });
 
   wsClient.on('surrendered', () => {
     wsClient.disconnect();
     localStorage.removeItem('skullking-active-room');
-    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], error: null });
+    set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], spectators: [], error: null });
   });
 
   // Resynchronisation complète de l'état depuis le serveur.
@@ -171,9 +191,13 @@ export const useRoomStore = create<RoomState>((set, get) => {
     results: [],
     shameLog: [],
     thumbs: [],
+    spectators: [],
+    history: null,
+    historyDetails: {},
     loading: false,
     error: null,
     kicked: false,
+    excluded: false,
 
     init() {
       set({
@@ -188,7 +212,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
     },
 
     async createRoom({ totalRounds, scoringPresetId, players }) {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, kicked: false, excluded: false });
       ensureConnected();
       try {
         await wsClient.waitForConnection();
@@ -208,7 +232,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
     },
 
     async joinRoom(code, playerName) {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, kicked: false, excluded: false });
       ensureConnected();
       try {
         await wsClient.waitForConnection();
@@ -224,6 +248,39 @@ export const useRoomStore = create<RoomState>((set, get) => {
         set({ loading: false, error: e.message });
         throw e;
       }
+    },
+
+    async spectateRoom(code, playerName) {
+      set({ loading: true, error: null, kicked: false, excluded: false });
+      ensureConnected();
+      try {
+        await wsClient.waitForConnection();
+        wsClient.send({
+          type: 'spectate-room',
+          playerId: get().myPlayerId,
+          playerName,
+          code: code.toUpperCase(),
+        });
+        await waitForState();
+        get().setMyPlayerName(playerName);
+      } catch (e: any) {
+        set({ loading: false, error: e.message });
+        throw e;
+      }
+    },
+
+    loadHistory() {
+      // Si la connexion est coupée, le message part dès la reconnexion (file d'attente du client WS)
+      ensureConnected();
+      // Détails vidés à chaque ouverture de la page : l'hôte a pu corriger une partie entre-temps
+      set({ historyDetails: {} });
+      wsClient.send({ type: 'get-history', playerId: get().myPlayerId });
+    },
+
+    loadHistoryGame(gameId) {
+      if (gameId in get().historyDetails) return; // déjà chargée
+      ensureConnected();
+      wsClient.send({ type: 'get-history-game', playerId: get().myPlayerId, gameId });
     },
 
     async loadRoomByCode(code) {
@@ -426,7 +483,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
       }
       wsClient.disconnect();
       localStorage.removeItem('skullking-active-room');
-      set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], error: null, kicked: false });
+      set({ room: null, bids: [], results: [], shameLog: [], thumbs: [], spectators: [], error: null, kicked: false, excluded: false });
     },
   };
 });

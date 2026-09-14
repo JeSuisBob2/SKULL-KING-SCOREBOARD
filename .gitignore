@@ -16,6 +16,8 @@ dist/
 # Sauvegarde des parties (persistance serveur)
 skullking-save.json
 skullking-save.json.tmp
+skullking-history.json
+skullking-history.json.tmp
 
 # Éditeurs
 .vscode/

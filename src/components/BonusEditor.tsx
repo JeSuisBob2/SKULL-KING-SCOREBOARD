@@ -20,7 +20,7 @@ export default function BonusEditor({ details, onChange }: Props) {
         <span className="tabular-nums font-semibold">{total > 0 ? `+${total}` : total}</span>
       </div>
       <div className="grid grid-cols-5 gap-1 mt-1.5">
-        {[-40, -30, -20, -10, -5].map(delta => (
+        {[-5, -10, -20, -30, -40].map(delta => (
           <button
             key={delta}
             className="btn btn-ghost text-sm px-1 py-1 text-red-300"

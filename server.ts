@@ -69,6 +69,18 @@ const roomResults  = new Map<string, Result[]>();
 const roomShameLog = new Map<string, Array<{ id: string; playerId: string; playerName: string; amount: number; round: number }>>();
 // Pouces 👍/👎 donnés par les joueurs, liés à une manche (reset naturel à la manche suivante)
 const roomThumbs   = new Map<string, Array<{ id: string; round: number; fromId: string; toId: string; dir: 1 | -1 }>>();
+// Spectateurs par salle : lecture seule, jamais dans room.players
+const roomSpectators = new Map<string, Array<{ id: string; name: string }>>();
+
+/** Retire tous les spectateurs d'une salle (avec notification de fermeture). */
+function dropSpectators(code: string) {
+  for (const s of roomSpectators.get(code) ?? []) {
+    sendTo(s.id, { type: 'room-deleted' });
+    playerToRoom.delete(s.id);
+    playerToWs.delete(s.id);
+  }
+  roomSpectators.delete(code);
+}
 
 const playerToRoom = new Map<string, string>(); // playerId → roomCode
 const playerToWs   = new Map<string, ReturnType<typeof Bun.serve>['upgrade'] extends (...a: any[]) => any ? any : any>();
@@ -108,6 +120,7 @@ function saveSnapshot() {
       roomResults:  [...roomResults.entries()],
       roomShameLog: [...roomShameLog.entries()],
       roomThumbs:   [...roomThumbs.entries()],
+      roomSpectators: [...roomSpectators.entries()],
       playerToRoom: [...playerToRoom.entries()],
     };
     const tmp = SNAPSHOT_FILE + '.tmp';
@@ -121,7 +134,102 @@ function saveSnapshot() {
 /** Sauvegarde différée : les changements rapprochés sont regroupés en une seule écriture. */
 function scheduleSave() {
   if (saveTimer) return;
-  saveTimer = setTimeout(() => { saveTimer = null; saveSnapshot(); }, 800);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveSnapshot();
+    if (historyDirty) saveHistory();
+  }, 800);
+}
+
+// ─── Historique des parties terminées (conservé 30 jours) ─────────────────────
+// Fichier séparé de la sauvegarde des parties en cours : fermer une salle
+// n'efface plus la partie de l'historique.
+
+interface HistoryEntry {
+  id: string;           // code + date de création (un code peut être réutilisé plus tard)
+  finishedAt: string;
+  room: Room;
+  bids: Bid[];
+  results: Result[];
+  shameLog: Array<{ id: string; playerId: string; playerName: string; amount: number; round: number }>;
+  thumbs: Array<{ id: string; round: number; fromId: string; toId: string; dir: 1 | -1 }>;
+}
+
+const HISTORY_FILE = process.env.SK_HISTORY_FILE ?? './skullking-history.json';
+const HISTORY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+let history: HistoryEntry[] = [];
+let historyDirty = false;
+
+function saveHistory() {
+  try {
+    const tmp = HISTORY_FILE + '.tmp';
+    writeFileSync(tmp, JSON.stringify(history));
+    renameSync(tmp, HISTORY_FILE); // même écriture atomique que la sauvegarde principale
+    historyDirty = false;
+  } catch (e) {
+    log('[history] échec de la sauvegarde :', e);
+  }
+}
+
+/** Supprime les parties terminées depuis plus de 30 jours. Retourne le nombre supprimé. */
+function purgeHistory(): number {
+  const limit = Date.now() - HISTORY_TTL_MS;
+  const before = history.length;
+  history = history.filter(e => new Date(e.finishedAt).getTime() > limit);
+  const removed = before - history.length;
+  if (removed > 0) {
+    historyDirty = true;
+    log(`[history] ${removed} partie(s) de plus de 30 jours supprimée(s)`);
+  }
+  return removed;
+}
+
+function loadHistory() {
+  try {
+    if (existsSync(HISTORY_FILE)) {
+      const parsed = JSON.parse(readFileSync(HISTORY_FILE, 'utf8'));
+      if (Array.isArray(parsed)) history = parsed;
+    }
+  } catch (e) {
+    log('[history] historique illisible, démarrage à vide :', e);
+  }
+  if (purgeHistory() > 0) saveHistory();
+  log(`[history] ${history.length} partie(s) dans l'historique`);
+}
+
+/**
+ * Archive (ou met à jour) une partie terminée. Appelé à chaque changement d'une
+ * salle 'complete', pour que les corrections de l'hôte après la fin soient prises en compte.
+ */
+function archiveGame(room: Room) {
+  const id = `${room.code}-${room.created_at}`;
+  const existing = history.find(e => e.id === id);
+  const entry: HistoryEntry = {
+    id,
+    finishedAt: existing?.finishedAt ?? now(),
+    room: structuredClone(room),
+    bids: structuredClone(roomBids.get(room.code) ?? []),
+    results: structuredClone(roomResults.get(room.code) ?? []),
+    shameLog: structuredClone(roomShameLog.get(room.code) ?? []),
+    thumbs: structuredClone(roomThumbs.get(room.code) ?? []),
+  };
+  if (existing) Object.assign(existing, entry);
+  else {
+    history.push(entry);
+    log(`[history] partie ${room.code} archivée`);
+  }
+  historyDirty = true;
+}
+
+/** Résumé léger pour la liste (évite d'envoyer tous les paris et résultats). */
+function summarizeHistory(e: HistoryEntry) {
+  const totalFor = (pid: string) =>
+    e.results.filter(r => r.player_id === pid && r.is_done).reduce((s, r) => s + r.score, 0)
+    + e.shameLog.filter(x => x.playerId === pid).reduce((s, x) => s + x.amount, 0);
+  const players = e.room.players
+    .map(p => ({ id: p.id, name: p.name, surrendered: !!p.surrendered, total: totalFor(p.id) }))
+    .sort((a, b) => b.total - a.total);
+  return { id: e.id, code: e.room.code, finishedAt: e.finishedAt, totalRounds: e.room.total_rounds, players };
 }
 
 /** Au démarrage : recharge la dernière sauvegarde si elle existe. */
@@ -137,6 +245,7 @@ function loadSnapshot() {
     for (const [k, v] of snap.roomResults ?? [])  roomResults.set(k, v);
     for (const [k, v] of snap.roomShameLog ?? []) roomShameLog.set(k, v);
     for (const [k, v] of snap.roomThumbs ?? [])   roomThumbs.set(k, v);
+    for (const [k, v] of snap.roomSpectators ?? []) roomSpectators.set(k, v);
     for (const [k, v] of snap.playerToRoom ?? []) playerToRoom.set(k, v);
     // Garantit que chaque salle a ses structures annexes (évite tout crash sur .get(code)!)
     for (const code of rooms.keys()) {
@@ -144,6 +253,7 @@ function loadSnapshot() {
       if (!roomResults.has(code))  roomResults.set(code, []);
       if (!roomShameLog.has(code)) roomShameLog.set(code, []);
       if (!roomThumbs.has(code))   roomThumbs.set(code, []);
+      if (!roomSpectators.has(code)) roomSpectators.set(code, []);
     }
     log(`[load] sauvegarde du ${snap.savedAt ?? '?'} rechargée : ${rooms.size} salle(s)`);
   } catch (e) {
@@ -179,6 +289,10 @@ function broadcastState(roomCode: string) {
     players: room.players.map(p => ({ ...p, connected: playerToWs.has(p.id) })),
   };
 
+  const shameLog   = roomShameLog.get(roomCode) ?? [];
+  const thumbs     = roomThumbs.get(roomCode) ?? [];
+  const spectators = roomSpectators.get(roomCode) ?? [];
+
   for (const player of room.players) {
     let filteredBids = bids;
 
@@ -192,10 +306,22 @@ function broadcastState(roomCode: string) {
       );
     }
 
-    const shameLog = roomShameLog.get(roomCode) ?? [];
-    const thumbs   = roomThumbs.get(roomCode) ?? [];
-    sendTo(player.id, { type: 'state', room: roomForSend, bids: filteredBids, results, shameLog, thumbs });
+    sendTo(player.id, { type: 'state', room: roomForSend, bids: filteredBids, results, shameLog, thumbs, spectators });
   }
+
+  // Spectateurs : mêmes infos, mais TOUS les paris de la manche en cours sont
+  // masqués pendant le bidding (un spectateur peut être assis à côté d'un joueur).
+  if (spectators.length > 0) {
+    const spectatorBids = room.status === 'bidding'
+      ? bids.map(b => b.round_number === room.current_round ? { ...b, bid: null, joker: false } : b)
+      : bids;
+    for (const s of spectators) {
+      sendTo(s.id, { type: 'state', room: roomForSend, bids: spectatorBids, results, shameLog, thumbs, spectators });
+    }
+  }
+
+  // Partie terminée → archivée dans l'historique (mise à jour si l'hôte corrige après la fin)
+  if (room.status === 'complete') archiveGame(room);
 
   // L'état du jeu vient de changer → on programme une sauvegarde sur disque.
   scheduleSave();
@@ -277,6 +403,7 @@ function handleMessage(ws: any, raw: string) {
         roomResults.delete(code);
       roomShameLog.delete(code);
       roomThumbs.delete(code);
+      dropSpectators(code);
         scheduleSave();
         log(`[room] ${code} supprimée automatiquement après 12h`);
       }, 12 * 60 * 60 * 1000);
@@ -312,6 +439,42 @@ function handleMessage(ws: any, raw: string) {
       break;
     }
 
+    // ── Historique des parties terminées (30 derniers jours) ────────────────
+    case 'get-history': {
+      const entries = [...history]
+        .sort((a, b) => b.finishedAt.localeCompare(a.finishedAt))
+        .map(summarizeHistory);
+      try { ws.send(JSON.stringify({ type: 'history-list', entries })); } catch {}
+      break;
+    }
+
+    case 'get-history-game': {
+      const entry = history.find(e => e.id === msg.gameId) ?? null;
+      try { ws.send(JSON.stringify({ type: 'history-game', gameId: msg.gameId, entry })); } catch {}
+      break;
+    }
+
+    // ── Join as spectator (lecture seule, même en cours de partie) ───────────
+    case 'spectate-room': {
+      const code = (msg.code as string)?.toUpperCase();
+      const room = rooms.get(code);
+      if (!room) { sendError(ws, 'Salle introuvable'); return; }
+      if (room.players.some(p => p.id === playerId)) {
+        sendError(ws, 'Vous êtes déjà joueur dans cette salle'); return;
+      }
+
+      const name = (msg.playerName as string)?.trim() || 'Spectateur';
+      const spectators = roomSpectators.get(code) ?? [];
+      if (!spectators.some(s => s.id === playerId)) {
+        spectators.push({ id: playerId, name });
+      }
+      roomSpectators.set(code, spectators);
+      playerToRoom.set(playerId, code);
+      log(`[room] ${playerId} (${name}) regarde ${code} en spectateur`);
+      broadcastState(code);
+      break;
+    }
+
     // ── Load room state (used after page refresh / navigation) ───────────────
     case 'load-room': {
       const code = (msg.code as string)?.toUpperCase();
@@ -337,6 +500,17 @@ function handleMessage(ws: any, raw: string) {
       const room = rooms.get(code);
       if (!room) return;
 
+      // Spectateur qui part : simple retrait du registre, la salle continue
+      const specs = roomSpectators.get(code) ?? [];
+      if (specs.some(s => s.id === playerId)) {
+        roomSpectators.set(code, specs.filter(s => s.id !== playerId));
+        playerToRoom.delete(playerId);
+        playerToWs.delete(playerId);
+        log(`[room] spectateur ${playerId} a quitté ${code}`);
+        broadcastState(code);
+        break;
+      }
+
       const isHost = room.host_player_id === playerId;
 
       // Remove the player
@@ -357,6 +531,7 @@ function handleMessage(ws: any, raw: string) {
         roomResults.delete(code);
       roomShameLog.delete(code);
       roomThumbs.delete(code);
+      dropSpectators(code);
         scheduleSave();
         log(`[room] ${code} supprimée (hôte/dernier joueur parti)`);
       } else {
@@ -416,6 +591,40 @@ function handleMessage(ws: any, raw: string) {
       if (!room || room.host_player_id !== playerId) return;
       if (room.players.length < 2) { sendError(ws, 'Il faut au moins 2 joueurs'); return; }
 
+      // Tirage au sort : à 9 joueurs ou plus, le jeu ne suit plus — on exclut
+      // aléatoirement (hôte compris) pour redescendre à 8 joueurs.
+      const MAX_GAME_PLAYERS = 8;
+      if (room.players.length >= 9) {
+        const excluded: RoomPlayer[] = [];
+        while (room.players.length > MAX_GAME_PLAYERS) {
+          // On garde toujours au moins un joueur "avec téléphone" (futur hôte possible)
+          const pool = room.players.filter(p =>
+            room.players.some(x => x.id !== p.id && !x.managedByHost)
+          );
+          const pick = pool[Math.floor(Math.random() * pool.length)] ?? room.players[0];
+          excluded.push(pick);
+          room.players = room.players.filter(p => p.id !== pick.id);
+        }
+
+        // Notifier les exclus AVANT de couper leurs connexions
+        for (const p of excluded) {
+          sendTo(p.id, { type: 'excluded' });
+          playerToRoom.delete(p.id);
+          playerToWs.delete(p.id);
+        }
+
+        // Si l'hôte a été tiré au sort → transfert automatique à un joueur restant
+        if (!room.players.some(p => p.id === room.host_player_id)) {
+          const candidates = room.players.filter(p => !p.managedByHost);
+          const newHost = candidates[Math.floor(Math.random() * candidates.length)] ?? room.players[0];
+          room.host_player_id = newHost.id;
+          for (const p of room.players) p.isHost = (p.id === newHost.id);
+          log(`[room] ${code} hôte exclu par tirage → nouveau : ${newHost.name}`);
+        }
+
+        log(`[room] ${code} tirage au sort : ${excluded.map(p => p.name).join(', ')} exclu(s) (${room.players.length} restants)`);
+      }
+
       room.status = 'bidding';
       room.current_round = 1;
       room.updated_at = now();
@@ -444,7 +653,7 @@ function handleMessage(ws: any, raw: string) {
         if (target.surrendered) return;
       } else {
         const me = room.players.find(p => p.id === playerId);
-        if (me?.surrendered) return;
+        if (!me || me.surrendered) return; // inconnu (spectateur) ou abandonné → refusé
       }
 
       const bids = roomBids.get(code)!;
@@ -491,7 +700,7 @@ function handleMessage(ws: any, raw: string) {
         if (target.surrendered) return;
       } else {
         const me = room.players.find(p => p.id === playerId);
-        if (me?.surrendered) return;
+        if (!me || me.surrendered) return; // inconnu (spectateur) ou abandonné → refusé
       }
 
       const bids = roomBids.get(code)!;
@@ -599,7 +808,7 @@ function handleMessage(ws: any, raw: string) {
         if (target.surrendered) return;
       } else {
         const me = room.players.find(p => p.id === playerId);
-        if (me?.surrendered) return;
+        if (!me || me.surrendered) return; // inconnu (spectateur) ou abandonné → refusé
       }
 
       const results = roomResults.get(code)!;
@@ -708,7 +917,7 @@ function handleMessage(ws: any, raw: string) {
         if (target.surrendered) return;
       } else {
         const me = room.players.find(p => p.id === playerId);
-        if (me?.surrendered) return;
+        if (!me || me.surrendered) return; // inconnu (spectateur) ou abandonné → refusé
       }
 
       const results = roomResults.get(code)!;
@@ -801,6 +1010,7 @@ function handleMessage(ws: any, raw: string) {
 
       const targetId = msg.targetPlayerId as string;
       const dir = Number(msg.dir); // 1 = 👍, -1 = 👎, 0 = retirer
+      if (!room.players.some(p => p.id === playerId)) return; // spectateurs : lecture seule
       if (!room.players.some(p => p.id === targetId)) return;
       if (dir !== 1 && dir !== -1 && dir !== 0) return;
 
@@ -966,6 +1176,7 @@ function handleMessage(ws: any, raw: string) {
           roomResults.delete(code);
           roomShameLog.delete(code);
       roomThumbs.delete(code);
+      dropSpectators(code);
           scheduleSave();
           log(`[room] ${code} supprimée (hôte abandonne sans successeur)`);
           break;
@@ -1040,6 +1251,7 @@ function handleMessage(ws: any, raw: string) {
       roomResults.delete(code);
       roomShameLog.delete(code);
       roomThumbs.delete(code);
+      dropSpectators(code);
       scheduleSave();
       log(`[room] ${code} supprimée`);
       break;
@@ -1073,6 +1285,10 @@ if (BASE) log(`[server] base détectée : "${BASE}"`);
 // Recharge les parties en cours depuis le disque (reprise après coupure/redémarrage).
 loadSnapshot();
 
+// Historique : chargement + purge des parties de plus de 30 jours, puis une fois par jour.
+loadHistory();
+setInterval(() => { if (purgeHistory() > 0) saveHistory(); }, 24 * 60 * 60 * 1000);
+
 // ─── Filets de sécurité process ─────────────────────────────────────────────
 // Une exception imprévue ne doit pas tuer le serveur (les parties resteraient en RAM).
 process.on('uncaughtException', (e) => log('[fatal] exception non gérée :', e));
@@ -1082,6 +1298,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     log(`[exit] ${sig} reçu — sauvegarde finale...`);
     saveSnapshot();
+    saveHistory();
     process.exit(0);
   });
 }
@@ -1136,6 +1353,7 @@ Bun.serve({
           roomResults.delete(code);
       roomShameLog.delete(code);
       roomThumbs.delete(code);
+      dropSpectators(code);
           scheduleSave();
           deleted++;
         }
@@ -1252,6 +1470,7 @@ Bun.serve({
                   roomResults.delete(code);
       roomShameLog.delete(code);
       roomThumbs.delete(code);
+      dropSpectators(code);
                   scheduleSave();
                   log(`[room] ${code} supprimée (inactivité)`);
                 }

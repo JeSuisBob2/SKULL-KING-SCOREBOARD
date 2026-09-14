@@ -8,11 +8,12 @@ import { useRoomStore } from '../store/useRoomStore';
 import { calculateScore } from '../lib/score';
 import { presets } from '../config/scoringConfig';
 import ScoreOverview from '../components/ScoreOverview';
-import ExcelJS from 'exceljs';
+import { exportGameToExcel } from '../lib/exportExcel';
 
 import ShameBag from '../components/ShameBag';
 import SurrenderDialog from '../components/SurrenderDialog';
 import BonusEditor, { sumBonus } from '../components/BonusEditor';
+import ThumbButtons from '../components/ThumbButtons';
 
 const EMPTY_SPECIALS = () => ({
   skullKing: { positive: 0, negative: 0 },
@@ -30,7 +31,7 @@ const EMPTY_SPECIALS = () => ({
 export default function RoomResults() {
   const nav = useNavigate();
   const { roomId, roundNumber } = useParams();
-  const { room, bids, results, shameLog, thumbs, myPlayerId, kicked, subscribeToRoom, unsubscribeFromRoom, submitResult, markResultDone, advanceToNextRound, hostOverrideResult, deleteRoom, submitResultForPlayer, markResultDoneForPlayer, shamePenalty, removeShame, surrender, takeControl } = useRoomStore();
+  const { room, bids, results, shameLog, thumbs, spectators, myPlayerId, kicked, subscribeToRoom, unsubscribeFromRoom, submitResult, markResultDone, advanceToNextRound, hostOverrideResult, deleteRoom, submitResultForPlayer, markResultDoneForPlayer, shamePenalty, removeShame, surrender, takeControl } = useRoomStore();
   const [surrenderOpen, setSurrenderOpen] = useState(false);
 
   const rNum = Number(roundNumber || 1);
@@ -110,6 +111,7 @@ export default function RoomResults() {
   const totalPlayers = activePlayers.length;
   const allDone = doneCount >= totalPlayers && totalPlayers > 0;
   const meSurrendered = room?.players.find(p => p.id === myPlayerId)?.surrendered;
+  const isSpectator = room ? !room.players.some(p => p.id === myPlayerId) : false;
 
   const standings = useMemo(() => {
     if (!room) return [];
@@ -136,113 +138,9 @@ export default function RoomResults() {
     setTimeout(() => setPending(false), 6000);
   };
 
-  const exportToExcel = async () => {
+  const exportToExcel = () => {
     if (!room) return;
-
-    const completedRounds = Array.from(
-      new Set(results.filter(r => r.is_done).map(r => r.round_number))
-    ).sort((a, b) => a - b);
-
-    const shameFor = (pid: string) =>
-      shameLog.filter(e => e.playerId === pid).reduce((s, e) => s + e.amount, 0);
-
-    const totalFor = (pid: string) =>
-      results.filter(r => r.player_id === pid && r.is_done).reduce((s, r) => s + r.score, 0) + shameFor(pid);
-
-    const sortedPlayers = [...room.players].sort((a, b) => totalFor(b.id) - totalFor(a.id));
-    const date = new Date().toLocaleDateString('fr-FR');
-    const hasPenalties = shameLog.length > 0;
-
-    const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet('SkullKing');
-
-    // Style helpers
-    const blackBorder: Partial<ExcelJS.Border> = { style: 'thin', color: { argb: 'FF000000' } };
-    const allBorders: Partial<ExcelJS.Borders> = { top: blackBorder, bottom: blackBorder, left: blackBorder, right: blackBorder };
-    const headerFill: ExcelJS.Fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
-
-    const applyBorder = (row: ExcelJS.Row, colCount: number, bold = false, fill?: ExcelJS.Fill) => {
-      for (let c = 1; c <= colCount; c++) {
-        const cell = row.getCell(c);
-        cell.border = allBorders;
-        cell.font = { bold };
-        if (fill) cell.fill = fill;
-      }
-    };
-
-    // ── Infos (Skull King et date fusionnées sur B:C) ─────────────────────
-    const infoRow1 = ws.addRow(['Jeu', 'Skull King', '']);
-    ws.mergeCells(`B1:C1`);
-    applyBorder(infoRow1, 3);
-    const infoRow2 = ws.addRow(['Date', date, '']);
-    ws.mergeCells(`B2:C2`);
-    applyBorder(infoRow2, 3);
-
-    // ── En-tête classement ────────────────────────────────────────────────
-    const summaryHeaders = ['Classement', 'Joueur', 'Score total', ...completedRounds.map(r => `M${r}`), ...(hasPenalties ? ['Pénalités'] : [])];
-    const headerRow = ws.addRow(summaryHeaders);
-    applyBorder(headerRow, summaryHeaders.length, true, headerFill);
-
-    // ── Données joueurs ───────────────────────────────────────────────────
-    sortedPlayers.forEach((p, i) => {
-      const roundScores = completedRounds.map(r =>
-        results.find(x => x.player_id === p.id && x.round_number === r && x.is_done)?.score ?? ''
-      );
-      const penalty = shameFor(p.id);
-      const dataRow = ws.addRow([i + 1, p.name, totalFor(p.id), ...roundScores, ...(hasPenalties ? [penalty || ''] : [])]);
-      applyBorder(dataRow, summaryHeaders.length);
-    });
-
-    // ── Ligne vide + en-tête détail ───────────────────────────────────────
-    ws.addRow([]);
-    const detailHeaders = ['Classement', 'Joueur', 'Manche', 'Pari', 'Plis réalisés', 'Harry', 'Bonus', 'Score manche', 'Cumul'];
-    const detailHeaderRow = ws.addRow(detailHeaders);
-    applyBorder(detailHeaderRow, detailHeaders.length, true, headerFill);
-
-    // ── Détail par manche ─────────────────────────────────────────────────
-    sortedPlayers.forEach((p, rank) => {
-      let cumul = 0;
-      completedRounds.forEach(r => {
-        const res = results.find(x => x.player_id === p.id && x.round_number === r && x.is_done);
-        const bid = bids.find(x => x.player_id === p.id && x.round_number === r);
-        const score = res?.score ?? 0;
-        cumul += score;
-        const harry = bid?.harry_adjustment;
-        const detailRow = ws.addRow([
-          rank + 1,
-          p.name,
-          r,
-          bid?.bid ?? '',
-          res?.tricks ?? '',
-          harry ? (harry > 0 ? `+${harry}` : harry) : '',
-          res?.bonus || '',
-          score,
-          cumul,
-        ]);
-        applyBorder(detailRow, detailHeaders.length);
-      });
-      if (shameFor(p.id) !== 0) {
-        const penRow = ws.addRow([rank + 1, p.name, 'Pénalités', '', '', '', '', shameFor(p.id), totalFor(p.id)]);
-        applyBorder(penRow, detailHeaders.length);
-      }
-    });
-
-    // ── Largeurs colonnes (après ajout des lignes) ─────────────────────────
-    const maxCols = Math.max(summaryHeaders.length, detailHeaders.length);
-    const colWidths = [14, 18, 13, 9, 11, 9, 9, 13, 9];
-    for (let c = 1; c <= maxCols; c++) {
-      ws.getColumn(c).width = colWidths[c - 1] ?? 10;
-    }
-
-    // ── Téléchargement ────────────────────────────────────────────────────
-    const buf = await wb.xlsx.writeBuffer();
-    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `skullking_${room.code}_${date.replace(/\//g, '-')}.xlsx`;
-    a.click();
-    URL.revokeObjectURL(url);
+    return exportGameToExcel({ room, results, bids, shameLog, date: new Date() });
   };
 
   if (!room) return null;
@@ -286,7 +184,7 @@ export default function RoomResults() {
     <Layout
       title={`Résultats · Manche ${rNum}/${room.total_rounds}`}
       right={
-        !meSurrendered && (
+        !meSurrendered && !isSpectator && (
           <button
             className="text-base opacity-60 hover:opacity-100 transition-opacity"
             onClick={() => setSurrenderOpen(true)}
@@ -298,6 +196,9 @@ export default function RoomResults() {
       }
     >
       <div className="space-y-4">
+        {isSpectator && (
+          <div className="card p-2 text-center text-sm opacity-70">👁️ Mode spectateur</div>
+        )}
         {/* Done status bar */}
         <div className="card p-3 flex items-center justify-between">
           <span className="text-sm">Terminés</span>
@@ -342,11 +243,14 @@ export default function RoomResults() {
           </div>
         )}
 
-        {/* Score history overview — visible dès la manche 1 */}
-        <ScoreOverview room={room} results={results} bids={bids} shameLog={shameLog} myPlayerId={myPlayerId} isHost={isHost} />
+        {/* Vue d'ensemble — cachée aux joueurs pendant les manches 1 à 5, l'hôte la voit toujours.
+            Toujours visible en fin de partie (utile pour les parties de moins de 6 manches). */}
+        {(isHost || rNum > 5 || isComplete) && (
+          <ScoreOverview room={room} results={results} bids={bids} shameLog={shameLog} myPlayerId={myPlayerId} isHost={isHost} />
+        )}
 
         {/* My results input */}
-        {!submitted && !isRoundComplete && !meSurrendered && (
+        {!submitted && !isRoundComplete && !meSurrendered && !isSpectator && (
           <div className="card p-4 space-y-4">
             <div className="section-title">
               Mes résultats · Pari : {myBid?.bid ?? 0}
@@ -732,6 +636,11 @@ export default function RoomResults() {
         {!isComplete && (
           <div className="card p-4">
             <div className="section-title mb-2">Statut</div>
+            {spectators.length > 0 && (
+              <div className="text-xs opacity-60 mb-2">
+                👁️ Spectateurs : {spectators.map(s => s.name).join(', ')}
+              </div>
+            )}
             <ul className="space-y-1">
               {room.players.map(p => {
                 const r = currentRoundResults.find(x => x.player_id === p.id);
@@ -746,11 +655,14 @@ export default function RoomResults() {
                 const disconnected = p.connected === false && !p.managedByHost;
                 return (
                   <li key={p.id} className="flex items-center justify-between text-sm">
-                    <span>
-                      {p.name}
-                      {disconnected && <span className="ml-1 text-xs" title="Déconnecté">📵</span>}
-                      {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span>
+                        {p.name}
+                        {disconnected && <span className="ml-1 text-xs" title="Déconnecté">📵</span>}
+                        {p.autoManaged && <span className="ml-1 text-xs opacity-50">(contrôlé par l'hôte)</span>}
+                      </span>
+                      <ThumbButtons targetId={p.id} round={rNum} />
+                    </div>
                     <div className="flex items-center gap-2">
                       {isHost && disconnected && !r?.is_done && (
                         <button

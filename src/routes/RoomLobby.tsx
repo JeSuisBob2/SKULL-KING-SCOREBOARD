@@ -8,7 +8,7 @@ import { useRoomStore } from '../store/useRoomStore';
 export default function RoomLobby() {
   const nav = useNavigate();
   const { roomId } = useParams();
-  const { room, myPlayerId, kicked, startGame, shufflePlayers, kickPlayer, subscribeToRoom, unsubscribeFromRoom, clearRoom, transferHost } = useRoomStore();
+  const { room, myPlayerId, kicked, excluded, startGame, shufflePlayers, kickPlayer, subscribeToRoom, unsubscribeFromRoom, clearRoom, transferHost } = useRoomStore();
   const [transferOpen, setTransferOpen] = useState(false);
 
   const isHost = room?.host_player_id === myPlayerId;
@@ -30,10 +30,10 @@ export default function RoomLobby() {
     }
   }, [room?.status, room?.current_round]);
 
-  // Kicked by host → go home
+  // Kicked by host or excluded by draw → go home
   useEffect(() => {
-    if (kicked) nav('/', { replace: true });
-  }, [kicked]);
+    if (kicked || excluded) nav('/', { replace: true });
+  }, [kicked, excluded]);
 
   const handleStart = async () => {
     if (!room) return;

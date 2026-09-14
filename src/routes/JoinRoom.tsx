@@ -6,7 +6,7 @@ import { useRoomStore } from '../store/useRoomStore';
 export default function JoinRoom() {
   const nav = useNavigate();
   const { code: codeParam } = useParams();
-  const { joinRoom, loadRoomByCode, myPlayerName, loading, error } = useRoomStore();
+  const { joinRoom, spectateRoom, loadRoomByCode, myPlayerName, loading, error } = useRoomStore();
 
   const [code, setCode] = useState(codeParam?.toUpperCase() ?? '');
   const [name, setName] = useState(myPlayerName);
@@ -16,21 +16,40 @@ export default function JoinRoom() {
     if (codeParam) setCode(codeParam.toUpperCase());
   }, [codeParam]);
 
-  const handleJoin = async () => {
+  const validate = () => {
     setLocalError('');
     const trimmedName = name.trim();
     const trimmedCode = code.trim().toUpperCase();
     if (!trimmedCode || trimmedCode.length !== 6) {
       setLocalError('Le code doit faire 6 caractères');
-      return;
+      return null;
     }
     if (!trimmedName) {
       setLocalError('Entrez votre nom');
-      return;
+      return null;
     }
+    return { trimmedName, trimmedCode };
+  };
+
+  const handleJoin = async () => {
+    const v = validate();
+    if (!v) return;
     try {
-      await joinRoom(trimmedCode, trimmedName);
-      const room = await loadRoomByCode(trimmedCode);
+      await joinRoom(v.trimmedCode, v.trimmedName);
+      const room = await loadRoomByCode(v.trimmedCode);
+      if (room) nav(`/room/${room.id}/lobby`);
+    } catch (e: any) {
+      setLocalError(e.message);
+    }
+  };
+
+  const handleSpectate = async () => {
+    const v = validate();
+    if (!v) return;
+    try {
+      await spectateRoom(v.trimmedCode, v.trimmedName);
+      const room = useRoomStore.getState().room;
+      // Le lobby redirige automatiquement vers la bonne page selon la phase en cours
       if (room) nav(`/room/${room.id}/lobby`);
     } catch (e: any) {
       setLocalError(e.message);
@@ -73,6 +92,17 @@ export default function JoinRoom() {
         >
           {loading ? 'Connexion...' : 'Rejoindre 🏴‍☠️'}
         </button>
+
+        <button
+          className="btn btn-ghost w-full disabled:opacity-40"
+          disabled={loading}
+          onClick={handleSpectate}
+        >
+          👁️ Regarder en spectateur
+        </button>
+        <p className="text-xs opacity-50 text-center -mt-3">
+          Le mode spectateur marche aussi quand la partie est déjà en cours
+        </p>
       </div>
     </Layout>
   );
