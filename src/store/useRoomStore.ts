@@ -17,6 +17,28 @@ function getOrCreatePlayerId(): string {
   return id;
 }
 
+const ADMIN_KEY = 'skullking-admin';
+
+/** Jeton admin en cours, ou null s'il est absent/expiré (l'expiration est aussi vérifiée côté serveur). */
+function loadAdminSession(): { token: string; expiresAt: number } | null {
+  try {
+    const raw = localStorage.getItem(ADMIN_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (!s?.token || typeof s.expiresAt !== 'number' || s.expiresAt <= Date.now()) {
+      localStorage.removeItem(ADMIN_KEY);
+      return null;
+    }
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+function clearAdminSession() {
+  try { localStorage.removeItem(ADMIN_KEY); } catch {}
+}
+
 function getWsUrl(): string {
   if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL as string;
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -34,8 +56,14 @@ interface RoomState {
   spectators: SpectatorInfo[];
   history: HistorySummary[] | null;   // null = pas encore chargé
   historyDetails: Record<string, HistoryEntry | null>;   // absent = pas chargé, null = introuvable
+  isAdmin: boolean;
+  adminPending: boolean;
+  adminError: string | null;
   loadHistory: () => void;
   loadHistoryGame: (gameId: string) => void;
+  adminLogin: (password: string) => void;
+  adminLogout: () => void;
+  deleteHistoryGame: (gameId: string) => void;
   loading: boolean;
   error: string | null;
   kicked: boolean;
@@ -144,6 +172,25 @@ export const useRoomStore = create<RoomState>((set, get) => {
     set(s => ({ historyDetails: { ...s.historyDetails, [msg.gameId]: msg.entry ?? null } }))
   );
 
+  // Accès admin
+  wsClient.on('admin-session', (msg) => {
+    try {
+      localStorage.setItem(ADMIN_KEY, JSON.stringify({ token: msg.token, expiresAt: msg.expiresAt }));
+    } catch {}
+    set({ isAdmin: true, adminPending: false, adminError: null });
+  });
+
+  // Refus (mauvais mot de passe, session expirée, trop de tentatives) → on repart propre
+  wsClient.on('admin-denied', (msg) => {
+    clearAdminSession();
+    set({ isAdmin: false, adminPending: false, adminError: msg.message ?? 'Accès refusé' });
+  });
+
+  wsClient.on('admin-logged-out', () => {
+    clearAdminSession();
+    set({ isAdmin: false, adminPending: false, adminError: null });
+  });
+
   // Exclu par tirage au sort (plus de 8 joueurs au démarrage)
   wsClient.on('excluded', () => {
     wsClient.disconnect();
@@ -194,6 +241,9 @@ export const useRoomStore = create<RoomState>((set, get) => {
     spectators: [],
     history: null,
     historyDetails: {},
+    isAdmin: !!loadAdminSession(),
+    adminPending: false,
+    adminError: null,
     loading: false,
     error: null,
     kicked: false,
@@ -283,6 +333,31 @@ export const useRoomStore = create<RoomState>((set, get) => {
       wsClient.send({ type: 'get-history-game', playerId: get().myPlayerId, gameId });
     },
 
+    adminLogin(password) {
+      if (!password) return;
+      set({ adminPending: true, adminError: null });
+      ensureConnected();
+      // Le mot de passe n'est ni stocké ni journalisé côté client : seul le jeton reçu l'est
+      wsClient.send({ type: 'admin-login', playerId: get().myPlayerId, password });
+    },
+
+    adminLogout() {
+      const session = loadAdminSession();
+      clearAdminSession();
+      set({ isAdmin: false, adminError: null, adminPending: false });
+      if (session) wsClient.send({ type: 'admin-logout', playerId: get().myPlayerId, token: session.token });
+    },
+
+    deleteHistoryGame(gameId) {
+      const session = loadAdminSession();
+      if (!session) {
+        set({ isAdmin: false, adminError: 'Session admin expirée — reconnectez-vous' });
+        return;
+      }
+      ensureConnected();
+      wsClient.send({ type: 'admin-delete-history-game', playerId: get().myPlayerId, token: session.token, gameId });
+    },
+
     async loadRoomByCode(code) {
       ensureConnected();
       // If already in this room, return current state
@@ -346,7 +421,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
       const bonus = bonusDetails.reduce((s, n) => s + n, 0);
       const config = presets[room.scoring_preset_id as keyof typeof presets] ?? presets.standard;
       const score = calculateScore(bidVal + harryAdjustment, tricks, room.current_round, bonus, config, jokerSuccess);
-      wsClient.send({ type: 'submit-result', playerId: get().myPlayerId, targetPlayerId, tricks, bonus, bonusDetails, specials, score, jokerSuccess });
+      wsClient.send({ type: 'submit-result', playerId: get().myPlayerId, targetPlayerId, tricks, bonus, bonusDetails, specials, score, jokerSuccess, harryAdjustment });
     },
 
     markResultDoneForPlayer(targetPlayerId) {
@@ -378,6 +453,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
         specials,
         score,
         jokerSuccess,
+        harryAdjustment,
       });
     },
 

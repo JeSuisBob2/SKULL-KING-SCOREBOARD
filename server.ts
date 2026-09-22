@@ -232,6 +232,48 @@ function summarizeHistory(e: HistoryEntry) {
   return { id: e.id, code: e.room.code, finishedAt: e.finishedAt, totalRounds: e.room.total_rounds, players };
 }
 
+/** Liste de l'historique, triée de la plus récente à la plus ancienne. */
+function historyList() {
+  return [...history].sort((a, b) => b.finishedAt.localeCompare(a.finishedAt)).map(summarizeHistory);
+}
+
+// ─── Accès admin (suppression de parties dans l'historique) ───────────────────
+// Le mot de passe n'est jamais stocké ni transmis : le serveur ne connaît que son
+// hachage argon2id, lu depuis SK_ADMIN_PASSWORD_HASH (fichier .env non versionné,
+// chargé automatiquement par Bun). Sans cette variable, l'accès admin est désactivé.
+
+// Un hachage argon2 valide commence toujours par "$argon2". Si ce n'est pas le cas, la
+// valeur a été abîmée à la lecture du .env (les $ interprétés comme des variables) :
+// on désactive l'accès admin et on le signale clairement au démarrage.
+const RAW_ADMIN_PASSWORD_HASH = process.env.SK_ADMIN_PASSWORD_HASH ?? '';
+const ADMIN_PASSWORD_HASH = RAW_ADMIN_PASSWORD_HASH.startsWith('$argon2') ? RAW_ADMIN_PASSWORD_HASH : '';
+const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;  // un jeton vaut 12 h
+const ADMIN_MAX_ATTEMPTS = 5;
+const ADMIN_LOCKOUT_MS = 15 * 60 * 1000;
+
+// Jetons de session admin : en mémoire uniquement, donc invalidés à chaque redémarrage.
+const adminSessions = new Map<string, number>();   // jeton → expiration (ms)
+const adminAttempts = new Map<string, { count: number; firstAt: number; lockedUntil: number }>();
+
+/** Jeton de session imprévisible (256 bits). */
+function newAdminToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function isAdminToken(token: unknown): boolean {
+  if (typeof token !== 'string' || token.length === 0) return false;
+  const expiresAt = adminSessions.get(token);
+  if (!expiresAt) return false;
+  if (expiresAt <= Date.now()) { adminSessions.delete(token); return false; }
+  return true;
+}
+
+function sendJson(ws: any, msg: unknown) {
+  try { ws.send(JSON.stringify(msg)); } catch {}
+}
+
 /** Au démarrage : recharge la dernière sauvegarde si elle existe. */
 function loadSnapshot() {
   try {
@@ -441,16 +483,82 @@ function handleMessage(ws: any, raw: string) {
 
     // ── Historique des parties terminées (30 derniers jours) ────────────────
     case 'get-history': {
-      const entries = [...history]
-        .sort((a, b) => b.finishedAt.localeCompare(a.finishedAt))
-        .map(summarizeHistory);
-      try { ws.send(JSON.stringify({ type: 'history-list', entries })); } catch {}
+      sendJson(ws, { type: 'history-list', entries: historyList() });
       break;
     }
 
     case 'get-history-game': {
       const entry = history.find(e => e.id === msg.gameId) ?? null;
       try { ws.send(JSON.stringify({ type: 'history-game', gameId: msg.gameId, entry })); } catch {}
+      break;
+    }
+
+    // ── Connexion admin (mot de passe → jeton de session) ───────────────────
+    case 'admin-login': {
+      if (!ADMIN_PASSWORD_HASH) {
+        sendJson(ws, { type: 'admin-denied', message: "Accès admin non configuré sur le serveur" });
+        return;
+      }
+
+      // Limite de tentatives par adresse IP (et non par playerId, fourni par le client)
+      const key = ((ws.data as any)?.clientIp as string) || (ws.remoteAddress as string) || playerId;
+      const nowMs = Date.now();
+      const att = adminAttempts.get(key) ?? { count: 0, firstAt: nowMs, lockedUntil: 0 };
+
+      if (att.lockedUntil > nowMs) {
+        const min = Math.ceil((att.lockedUntil - nowMs) / 60_000);
+        sendJson(ws, { type: 'admin-denied', message: `Trop de tentatives — réessayez dans ${min} min` });
+        return;
+      }
+      if (nowMs - att.firstAt > ADMIN_LOCKOUT_MS) { att.count = 0; att.firstAt = nowMs; } // fenêtre glissante
+
+      let ok = false;
+      try {
+        ok = typeof msg.password === 'string' && Bun.password.verifySync(msg.password, ADMIN_PASSWORD_HASH);
+      } catch { ok = false; }
+
+      if (!ok) {
+        att.count++;
+        if (att.count >= ADMIN_MAX_ATTEMPTS) {
+          att.lockedUntil = nowMs + ADMIN_LOCKOUT_MS;
+          att.count = 0;
+          att.firstAt = nowMs;
+        }
+        adminAttempts.set(key, att);
+        log('[admin] tentative de connexion refusée'); // jamais le mot de passe saisi
+        sendJson(ws, { type: 'admin-denied', message: 'Mot de passe incorrect' });
+        return;
+      }
+
+      adminAttempts.delete(key);
+      const token = newAdminToken();
+      const expiresAt = nowMs + ADMIN_SESSION_TTL_MS;
+      adminSessions.set(token, expiresAt);
+      log('[admin] connexion réussie');
+      sendJson(ws, { type: 'admin-session', token, expiresAt });
+      break;
+    }
+
+    case 'admin-logout': {
+      if (typeof msg.token === 'string') adminSessions.delete(msg.token);
+      sendJson(ws, { type: 'admin-logged-out' });
+      break;
+    }
+
+    // ── Suppression d'une partie de l'historique (admin uniquement) ─────────
+    case 'admin-delete-history-game': {
+      if (!isAdminToken(msg.token)) {
+        sendJson(ws, { type: 'admin-denied', message: 'Session admin expirée — reconnectez-vous' });
+        return;
+      }
+      const gameId = msg.gameId as string;
+      const before = history.length;
+      history = history.filter(e => e.id !== gameId);
+      if (history.length < before) {
+        saveHistory();
+        log(`[admin] partie ${gameId} supprimée de l'historique`);
+      }
+      sendJson(ws, { type: 'history-list', entries: historyList() });
       break;
     }
 
@@ -811,6 +919,15 @@ function handleMessage(ws: any, raw: string) {
         if (!me || me.surrendered) return; // inconnu (spectateur) ou abandonné → refusé
       }
 
+      // Harry est ajusté à la phase des résultats : on le mémorise dans le pari de la manche,
+      // sinon il est compté dans le score mais invisible (vue d'ensemble, export Excel).
+      if (msg.harryAdjustment !== undefined) {
+        const bid = (roomBids.get(code) ?? []).find(
+          b => b.player_id === targetId && b.round_number === room.current_round
+        );
+        if (bid) bid.harry_adjustment = Number(msg.harryAdjustment) || 0;
+      }
+
       const results = roomResults.get(code)!;
       const existing = results.find(
         r => r.player_id === targetId && r.round_number === room.current_round
@@ -1098,6 +1215,8 @@ function handleMessage(ws: any, raw: string) {
       if (!target) { sendError(ws, 'Joueur introuvable'); return; }
       if (target.surrendered) { sendError(ws, 'Impossible : ce joueur a abandonné'); return; }
       if (target.managedByHost) { sendError(ws, 'Impossible : joueur géré par l\'hôte'); return; }
+      // Un joueur déconnecté ne pourrait pas faire avancer la partie
+      if (!playerToWs.has(targetId)) { sendError(ws, 'Impossible : ce joueur est déconnecté'); return; }
 
       // Update host references
       room.host_player_id = targetId;
@@ -1289,6 +1408,15 @@ loadSnapshot();
 loadHistory();
 setInterval(() => { if (purgeHistory() > 0) saveHistory(); }, 24 * 60 * 60 * 1000);
 
+if (ADMIN_PASSWORD_HASH) {
+  log('[admin] accès admin activé');
+} else if (RAW_ADMIN_PASSWORD_HASH) {
+  log('[admin] accès admin DÉSACTIVÉ : hachage illisible dans .env (les $ doivent être échappés)');
+  log('[admin] relancez : bun scripts/hash-admin-password.ts');
+} else {
+  log('[admin] accès admin désactivé (SK_ADMIN_PASSWORD_HASH absent du .env)');
+}
+
 // ─── Filets de sécurité process ─────────────────────────────────────────────
 // Une exception imprévue ne doit pas tuer le serveur (les parties resteraient en RAM).
 process.on('uncaughtException', (e) => log('[fatal] exception non gérée :', e));
@@ -1379,7 +1507,12 @@ Bun.serve({
     // WebSocket upgrade
     if (url.pathname === '/ws') {
       log(`[ws] tentative de connexion depuis ${req.headers.get('origin') || 'unknown'}`);
-      if (server.upgrade(req)) return undefined;
+      // Vraie IP du client, pour la limite de tentatives admin : derrière le reverse proxy,
+      // remoteAddress est celle du proxy. X-Forwarded-For est fiable parce que le proxy le
+      // réécrit ; en accès direct il peut être falsifié, d'où le repli sur l'adresse réelle.
+      const forwarded = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
+      const clientIp = forwarded || server.requestIP(req)?.address || '';
+      if (server.upgrade(req, { data: { clientIp } })) return undefined;
       return new Response('WebSocket upgrade failed', { status: 400 });
     }
 

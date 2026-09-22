@@ -14,9 +14,10 @@ export default function TransferHostDialog({ open, myPlayerId, players, onClose,
 
   if (!open) return null;
 
-  // Eligible new hosts: not me, not surrendered, not managed by host
+  // Successeurs possibles : pas moi, pas abandonné, pas géré par l'hôte, et connecté
+  // (un joueur déconnecté ne pourrait pas piloter la partie)
   const candidates = players.filter(
-    p => p.id !== myPlayerId && !p.surrendered && !p.managedByHost
+    p => p.id !== myPlayerId && !p.surrendered && !p.managedByHost && p.connected !== false
   );
 
   const handleConfirm = () => {

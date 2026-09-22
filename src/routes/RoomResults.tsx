@@ -12,6 +12,7 @@ import { exportGameToExcel } from '../lib/exportExcel';
 
 import ShameBag from '../components/ShameBag';
 import SurrenderDialog from '../components/SurrenderDialog';
+import TransferHostDialog from '../components/TransferHostDialog';
 import BonusEditor, { sumBonus } from '../components/BonusEditor';
 import ThumbButtons from '../components/ThumbButtons';
 
@@ -31,8 +32,9 @@ const EMPTY_SPECIALS = () => ({
 export default function RoomResults() {
   const nav = useNavigate();
   const { roomId, roundNumber } = useParams();
-  const { room, bids, results, shameLog, thumbs, spectators, myPlayerId, kicked, subscribeToRoom, unsubscribeFromRoom, submitResult, markResultDone, advanceToNextRound, hostOverrideResult, deleteRoom, submitResultForPlayer, markResultDoneForPlayer, shamePenalty, removeShame, surrender, takeControl } = useRoomStore();
+  const { room, bids, results, shameLog, thumbs, spectators, myPlayerId, kicked, subscribeToRoom, unsubscribeFromRoom, submitResult, markResultDone, advanceToNextRound, hostOverrideResult, deleteRoom, submitResultForPlayer, markResultDoneForPlayer, shamePenalty, removeShame, surrender, takeControl, transferHost } = useRoomStore();
   const [surrenderOpen, setSurrenderOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
 
   const rNum = Number(roundNumber || 1);
   const isHost = room?.host_player_id === myPlayerId;
@@ -184,15 +186,26 @@ export default function RoomResults() {
     <Layout
       title={`Résultats · Manche ${rNum}/${room.total_rounds}`}
       right={
-        !meSurrendered && !isSpectator && (
-          <button
-            className="text-base opacity-60 hover:opacity-100 transition-opacity"
-            onClick={() => setSurrenderOpen(true)}
-            title="Abandonner la partie"
-          >
-            🏳️
-          </button>
-        )
+        <div className="flex items-center gap-2">
+          {isHost && !isSpectator && (
+            <button
+              className="text-base opacity-60 hover:opacity-100 transition-opacity"
+              onClick={() => setTransferOpen(true)}
+              title="Donner le contrôle de la partie"
+            >
+              👑
+            </button>
+          )}
+          {!meSurrendered && !isSpectator && (
+            <button
+              className="text-base opacity-60 hover:opacity-100 transition-opacity"
+              onClick={() => setSurrenderOpen(true)}
+              title="Abandonner la partie"
+            >
+              🏳️
+            </button>
+          )}
+        </div>
       }
     >
       <div className="space-y-4">
@@ -746,6 +759,17 @@ export default function RoomResults() {
         onConfirm={(newHostId) => {
           surrender(newHostId);
           setSurrenderOpen(false);
+        }}
+      />
+
+      <TransferHostDialog
+        open={transferOpen}
+        myPlayerId={myPlayerId}
+        players={room.players}
+        onClose={() => setTransferOpen(false)}
+        onConfirm={(newHostId) => {
+          transferHost(newHostId);
+          setTransferOpen(false);
         }}
       />
     </Layout>

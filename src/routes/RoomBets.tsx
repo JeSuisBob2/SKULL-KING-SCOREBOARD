@@ -7,6 +7,7 @@ import { useRoomStore } from '../store/useRoomStore';
 import ScoreOverview from '../components/ScoreOverview';
 import ShameBag from '../components/ShameBag';
 import SurrenderDialog from '../components/SurrenderDialog';
+import TransferHostDialog from '../components/TransferHostDialog';
 import ThumbButtons from '../components/ThumbButtons';
 
 const formatTime = (iso: string | null) => {
@@ -23,9 +24,10 @@ export default function RoomBets() {
     submitBid, markBidReady, advanceToScoring,
     submitBidForPlayer, markBidReadyForPlayer,
     resetMyBid, resetBids, resetBidForPlayer, shamePenalty, removeShame, shameLog,
-    surrender, takeControl, spectators,
+    surrender, takeControl, spectators, transferHost,
   } = useRoomStore();
   const [surrenderOpen, setSurrenderOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
 
   const rNum = Number(roundNumber || 1);
   const isHost = room?.host_player_id === myPlayerId;
@@ -170,15 +172,26 @@ export default function RoomBets() {
     <Layout
       title={`Paris · Manche ${rNum}/${room.total_rounds}`}
       right={
-        !meSurrendered && !isSpectator && (
-          <button
-            className="text-base opacity-60 hover:opacity-100 transition-opacity"
-            onClick={() => setSurrenderOpen(true)}
-            title="Abandonner la partie"
-          >
-            🏳️
-          </button>
-        )
+        <div className="flex items-center gap-2">
+          {isHost && !isSpectator && (
+            <button
+              className="text-base opacity-60 hover:opacity-100 transition-opacity"
+              onClick={() => setTransferOpen(true)}
+              title="Donner le contrôle de la partie"
+            >
+              👑
+            </button>
+          )}
+          {!meSurrendered && !isSpectator && (
+            <button
+              className="text-base opacity-60 hover:opacity-100 transition-opacity"
+              onClick={() => setSurrenderOpen(true)}
+              title="Abandonner la partie"
+            >
+              🏳️
+            </button>
+          )}
+        </div>
       }
     >
       <div className="space-y-4">
@@ -510,6 +523,17 @@ export default function RoomBets() {
         onConfirm={(newHostId) => {
           surrender(newHostId);
           setSurrenderOpen(false);
+        }}
+      />
+
+      <TransferHostDialog
+        open={transferOpen}
+        myPlayerId={myPlayerId}
+        players={room.players}
+        onClose={() => setTransferOpen(false)}
+        onConfirm={(newHostId) => {
+          transferHost(newHostId);
+          setTransferOpen(false);
         }}
       />
     </Layout>
