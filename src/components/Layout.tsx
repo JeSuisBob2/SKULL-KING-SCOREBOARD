@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { ReactNode, useState } from 'react';
 import RulesDrawer from './RulesDrawer';
 import { useRoomStore } from '../store/useRoomStore';
+import { useAppUpdate, applyUpdate } from '../lib/appUpdate';
 
 interface LayoutProps {
   title: string;
@@ -13,6 +14,7 @@ export default function Layout({ title, right, children }: LayoutProps) {
   const [rulesOpen, setRulesOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const roomCode = useRoomStore(s => s.room?.code);
+  const updateAvailable = useAppUpdate(s => s.available);
 
   const copyCode = () => {
     if (!roomCode) return;
@@ -24,6 +26,16 @@ export default function Layout({ title, right, children }: LayoutProps) {
   return (
     <div className="min-h-full flex flex-col">
       <header className="sticky top-0 z-10 bg-gradient-to-b from-surface/95 to-surface/70 backdrop-blur border-b border-white/10">
+        {updateAvailable && (
+          <div className="bg-accent/15 border-b border-accent/30">
+            <div className="container py-1.5 flex items-center justify-between gap-2 text-xs">
+              <span className="opacity-80">🔄 Nouvelle version — installée automatiquement à la prochaine phase</span>
+              <button className="underline font-semibold shrink-0" onClick={() => applyUpdate(true)}>
+                Mettre à jour
+              </button>
+            </div>
+          </div>
+        )}
         <div className="container flex items-center justify-between py-3">
           <Link to="/" className="text-accent font-bold text-lg tracking-tight">
             Skull King

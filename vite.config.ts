@@ -2,10 +2,25 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
+// Identifiant unique de ce build : intégré au code de l'appli, et écrit dans
+// dist/version.json que le serveur annonce aux téléphones connectés. Un téléphone
+// qui voit une version différente de la sienne sait qu'il doit se mettre à jour.
+const BUILD_ID = new Date().toISOString();
+
 export default defineConfig({
   base: process.env.VITE_BASE ?? '/sk-tracking/',
+  define: {
+    __APP_BUILD__: JSON.stringify(BUILD_ID),
+  },
   plugins: [
     react(),
+    {
+      name: 'sk-build-version',
+      apply: 'build',
+      generateBundle() {
+        this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ build: BUILD_ID }) });
+      },
+    },
     VitePWA({
       registerType: 'autoUpdate',
       strategies: 'generateSW',

@@ -83,7 +83,65 @@ function dropSpectators(code: string) {
 }
 
 const playerToRoom = new Map<string, string>(); // playerId → roomCode
-const playerToWs   = new Map<string, ReturnType<typeof Bun.serve>['upgrade'] extends (...a: any[]) => any ? any : any>();
+/**
+ * Connexions WebSocket ouvertes, par joueur.
+ *
+ * Un même joueur peut avoir plusieurs connexions à la fois : le navigateur ouvert par le
+ * QR code + l'appli installée, deux onglets, ou l'ancienne connexion d'un téléphone qui
+ * sort de veille alors que la nouvelle est déjà ouverte. Avant, une seule connexion était
+ * retenue : la dernière qui envoyait un message « volait » la place des autres, et l'écran
+ * réellement affiché ne recevait plus rien. L'état est maintenant envoyé à toutes.
+ */
+class PlayerSockets {
+  private byPlayer = new Map<string, Set<any>>();
+  private ownerOf  = new Map<any, string>(); // connexion → joueur
+
+  /** Rattache une connexion à un joueur. Renvoie true si le joueur n'en avait aucune. */
+  attach(playerId: string, ws: any): boolean {
+    const current = this.ownerOf.get(ws);
+    if (current === playerId) return false;
+    if (current) this.detach(ws); // la connexion change d'identité (rare)
+    let sockets = this.byPlayer.get(playerId);
+    const wasEmpty = !sockets || sockets.size === 0;
+    if (!sockets) { sockets = new Set(); this.byPlayer.set(playerId, sockets); }
+    sockets.add(ws);
+    this.ownerOf.set(ws, playerId);
+    return wasEmpty;
+  }
+
+  /** Retire une connexion fermée. Renvoie le joueur s'il n'a plus aucune connexion, sinon null. */
+  detach(ws: any): string | null {
+    const playerId = this.ownerOf.get(ws);
+    if (!playerId) return null;
+    this.ownerOf.delete(ws);
+    const sockets = this.byPlayer.get(playerId);
+    sockets?.delete(ws);
+    if (sockets && sockets.size > 0) return null;
+    this.byPlayer.delete(playerId);
+    return playerId;
+  }
+
+  /** Oublie toutes les connexions d'un joueur (parti, expulsé, salle fermée...). */
+  delete(playerId: string) {
+    for (const ws of this.byPlayer.get(playerId) ?? []) this.ownerOf.delete(ws);
+    this.byPlayer.delete(playerId);
+  }
+
+  has(playerId: string): boolean {
+    return (this.byPlayer.get(playerId)?.size ?? 0) > 0;
+  }
+
+  socketsOf(playerId: string): Iterable<any> {
+    return this.byPlayer.get(playerId) ?? [];
+  }
+
+  /** Nombre total de connexions ouvertes (statistiques). */
+  get size(): number {
+    return this.ownerOf.size;
+  }
+}
+
+const playerToWs = new PlayerSockets();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -303,10 +361,12 @@ function loadSnapshot() {
   }
 }
 
+/** Envoie un message à toutes les connexions ouvertes du joueur. */
 function sendTo(playerId: string, msg: unknown) {
-  const ws = playerToWs.get(playerId);
-  if (!ws) return;
-  try { ws.send(JSON.stringify(msg)); } catch {}
+  const data = JSON.stringify(msg);
+  for (const ws of playerToWs.socketsOf(playerId)) {
+    try { ws.send(data); } catch {}
+  }
 }
 
 function sendError(ws: any, message: string) {
@@ -390,7 +450,7 @@ function handleMessage(ws: any, raw: string) {
 
   // Heartbeat — répond avant toute validation (pas besoin de playerId)
   if (msg.type === 'ping') {
-    if (msg.playerId) playerToWs.set(msg.playerId, ws);
+    if (msg.playerId) playerToWs.attach(msg.playerId, ws);
     try { ws.send('{"type":"pong"}'); } catch {}
     return;
   }
@@ -398,9 +458,8 @@ function handleMessage(ws: any, raw: string) {
   const playerId: string | undefined = msg.playerId;
   if (!playerId) return;
 
-  // Always update the ws reference for this player (handles reconnects)
-  const wasDisconnected = !playerToWs.has(playerId);
-  playerToWs.set(playerId, ws);
+  // Rattache cette connexion au joueur (reconnexions et connexions multiples)
+  const wasDisconnected = playerToWs.attach(playerId, ws);
 
   // Si le joueur revient et que l'hôte avait pris le contrôle → on le lui rend
   if (wasDisconnected) releaseAutoControl(playerId);
@@ -1383,6 +1442,27 @@ function handleMessage(ws: any, raw: string) {
 const PORT = parseInt(process.env.PORT ?? '2456');
 const DIST  = './dist';
 
+// ─── Version du client en ligne ───────────────────────────────────────────────
+// Le build écrit son identifiant dans dist/version.json. On l'annonce à chaque
+// téléphone qui se connecte, et à tous dès qu'un nouveau build est détecté : un
+// téléphone resté ouvert sur une ancienne version se met alors à jour de lui-même.
+
+const allSockets = new Set<any>();
+
+function readClientBuild(): string {
+  try { return JSON.parse(readFileSync(DIST + '/version.json', 'utf8')).build ?? ''; } catch { return ''; }
+}
+
+let announcedBuild = readClientBuild();
+setInterval(() => {
+  const build = readClientBuild();
+  if (build && build !== announcedBuild) {
+    announcedBuild = build;
+    log('[version] nouveau build détecté — les téléphones vont se mettre à jour');
+    for (const ws of allSockets) sendJson(ws, { type: 'version', build });
+  }
+}, 30_000);
+
 // Auto-detect the base path from index.html so the server works regardless of
 // how the app was built (base '/' for local, '/sk-tracking/' for GitHub Pages).
 async function detectBase(): Promise<string> {
@@ -1564,7 +1644,12 @@ Bun.serve({
   },
 
   websocket: {
-    open(ws)  { log('[ws] client connecté'); },
+    open(ws) {
+      log('[ws] client connecté');
+      allSockets.add(ws);
+      const build = readClientBuild();
+      if (build) sendJson(ws, { type: 'version', build });
+    },
     message(ws, data) {
       // try/catch global : une erreur sur UN message ne doit jamais tuer le serveur
       try {
@@ -1574,10 +1659,11 @@ Bun.serve({
       }
     },
     close(ws) {
-      let disconnectedPlayerId: string | null = null;
-      for (const [pid, s] of playerToWs.entries()) {
-        if (s === ws) { playerToWs.delete(pid); disconnectedPlayerId = pid; break; }
-      }
+      allSockets.delete(ws);
+
+      // Retire cette connexion. Le joueur n'est « déconnecté » que s'il n'en a plus
+      // aucune autre d'ouverte (navigateur + appli installée, deux onglets...).
+      const disconnectedPlayerId = playerToWs.detach(ws);
 
       // Suppression instantanée si plus personne de connecté dans la salle
       if (disconnectedPlayerId) {

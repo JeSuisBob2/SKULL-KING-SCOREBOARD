@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { onRouteChange } from './lib/appUpdate';
 import Home from './routes/Home';
 import NewGame from './routes/NewGame';
 import Bets from './routes/Bets';
@@ -38,10 +39,24 @@ function RoomAutoReconnect() {
   return null;
 }
 
+/** Si une nouvelle version est en ligne, l'installe au changement de page (fin de phase). */
+function UpdateOnNavigate() {
+  const location = useLocation();
+  const first = useRef(true);
+
+  useEffect(() => {
+    if (first.current) { first.current = false; return; }
+    onRouteChange();
+  }, [location.pathname]);
+
+  return null;
+}
+
 export default function App() {
   return (
     <>
     <RoomAutoReconnect />
+    <UpdateOnNavigate />
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/new" element={<NewGame />} />
