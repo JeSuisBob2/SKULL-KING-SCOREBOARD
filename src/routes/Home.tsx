@@ -2,6 +2,10 @@ import { Link, useNavigate } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { useEffect, useState } from 'react';
 import HistoryList from '../components/HistoryList';
+import StatsSection from '../components/StatsSection';
+
+const STATS_OPEN_KEY = 'skullking-stats-open';
+import { HISTORY_RETENTION_DAYS } from '../config/history';
 import { useStore } from '../store/useStore';
 import { useRoomStore } from '../store/useRoomStore';
 
@@ -12,6 +16,15 @@ export default function Home() {
 
   const activeRoomCode = room?.code ?? localStorage.getItem('skullking-active-room');
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Section des stats : reste ouverte au retour d'une fiche joueur
+  const [statsOpen, setStatsOpen] = useState(() => {
+    try { return sessionStorage.getItem(STATS_OPEN_KEY) === '1'; } catch { return false; }
+  });
+  const toggleStats = () => {
+    const next = !statsOpen;
+    setStatsOpen(next);
+    try { sessionStorage.setItem(STATS_OPEN_KEY, next ? '1' : '0'); } catch {}
+  };
 
   useEffect(() => {
     loadGames();
@@ -89,7 +102,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Historique des parties multijoueur (30 derniers jours, stocké sur le serveur) — se déplie sur place */}
+        {/* Historique des parties multijoueur récentes (stocké sur le serveur) — se déplie sur place */}
         <button
           onClick={() => setHistoryOpen(v => !v)}
           aria-expanded={historyOpen}
@@ -99,12 +112,29 @@ export default function Home() {
             <span className="text-2xl">📜</span>
             <div>
               <div className="font-semibold">Historique des parties</div>
-              <div className="text-xs opacity-60">Les parties multijoueur des 30 derniers jours</div>
+              <div className="text-xs opacity-60">Les parties multijoueur des {HISTORY_RETENTION_DAYS} derniers jours</div>
             </div>
           </div>
           <span className="text-sm opacity-60">{historyOpen ? '▲' : '▼'}</span>
         </button>
         {historyOpen && <HistoryList />}
+
+        {/* Statistiques des joueurs (toutes les parties, conservées pour toujours) — se déplie sur place */}
+        <button
+          onClick={toggleStats}
+          aria-expanded={statsOpen}
+          className="card p-4 w-full text-left flex items-center justify-between gap-3 hover:bg-white/5 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">📊</span>
+            <div>
+              <div className="font-semibold">Statistiques des joueurs</div>
+              <div className="text-xs opacity-60">Fiches, profils de parieur et records de la table</div>
+            </div>
+          </div>
+          <span className="text-sm opacity-60">{statsOpen ? '▲' : '▼'}</span>
+        </button>
+        {statsOpen && <StatsSection />}
 
         <ul className="space-y-3">
           {games.map((g) => (

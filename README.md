@@ -12,7 +12,10 @@ Application web de suivi des scores pour le jeu de cartes **Skull King**, en mod
 - 👑 **Joueurs gérés par l'hôte** — pour les joueurs sans téléphone
 - ✏️ **Correction des scores** — l'hôte peut modifier n'importe quelle manche passée
 - 🔀 **Ordre aléatoire** des joueurs
-- 📜 **Historique** des parties terminées, conservé 30 jours sur le serveur
+- 📜 **Historique** des parties terminées, conservé 60 jours sur le serveur
+- 📊 **Statistiques des joueurs** — fiche par joueur, profil de parieur, réussite par manche et records
+  de la table, calculés sur toutes les parties : chaque partie terminée est résumée dans
+  `skullking-career.json`, conservé pour toujours (au-delà des 60 jours de l'historique)
 - 🔒 **Accès admin** — suppression de parties dans l'historique (mot de passe haché argon2id)
 - 📴 **PWA** — installable sur l'écran d'accueil iOS/Android
 

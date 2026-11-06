@@ -70,11 +70,12 @@ export interface HistorySummary {
   id: string;
   code: string;
   finishedAt: string;
+  expiresAt: string;   // date de suppression automatique, calculée par le serveur
   totalRounds: number;
   players: { id: string; name: string; total: number; surrendered: boolean }[];
 }
 
-/** Partie terminée complète (conservée 30 jours sur le serveur). */
+/** Partie terminée complète (conservée sur le serveur, voir src/config/history.ts). */
 export interface HistoryEntry {
   id: string;
   finishedAt: string;

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { wsClient } from '../lib/ws';
 import { RoomRow, RoomBidRow, RoomResultRow, RoomPlayer, ShameEntry, ThumbEntry, SpectatorInfo, HistorySummary, HistoryEntry } from '../lib/supabase';
+import type { StatsPayload } from '../lib/careerStats';
 import { calculateScore } from '../lib/score';
 import { presets } from '../config/scoringConfig';
 import { uid } from '../lib/utils';
@@ -56,6 +57,8 @@ interface RoomState {
   spectators: SpectatorInfo[];
   history: HistorySummary[] | null;   // null = pas encore chargé
   historyDetails: Record<string, HistoryEntry | null>;   // absent = pas chargé, null = introuvable
+  stats: StatsPayload | null;                            // null = pas encore chargées
+  loadStats: () => void;
   isAdmin: boolean;
   adminPending: boolean;
   adminError: string | null;
@@ -168,6 +171,9 @@ export const useRoomStore = create<RoomState>((set, get) => {
 
   // Historique des parties terminées
   wsClient.on('history-list', (msg) => set({ history: msg.entries ?? [] }));
+  // Statistiques des joueurs (calculées par le serveur à chaque demande)
+  wsClient.on('stats', (msg) => set({ stats: msg.stats ?? null }));
+
   wsClient.on('history-game', (msg) =>
     set(s => ({ historyDetails: { ...s.historyDetails, [msg.gameId]: msg.entry ?? null } }))
   );
@@ -241,6 +247,7 @@ export const useRoomStore = create<RoomState>((set, get) => {
     spectators: [],
     history: null,
     historyDetails: {},
+    stats: null,
     isAdmin: !!loadAdminSession(),
     adminPending: false,
     adminError: null,
@@ -325,6 +332,11 @@ export const useRoomStore = create<RoomState>((set, get) => {
       // Détails vidés à chaque ouverture de la page : l'hôte a pu corriger une partie entre-temps
       set({ historyDetails: {} });
       wsClient.send({ type: 'get-history', playerId: get().myPlayerId });
+    },
+
+    loadStats() {
+      ensureConnected();
+      wsClient.send({ type: 'get-stats', playerId: get().myPlayerId });
     },
 
     loadHistoryGame(gameId) {

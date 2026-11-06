@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import HistoryDetails from './HistoryDetails';
 import { useRoomStore } from '../store/useRoomStore';
+import { HISTORY_RETENTION_DAYS } from '../config/history';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -11,7 +12,7 @@ const formatDate = (iso: string) => {
   return `${date} · ${time}`;
 };
 
-/** Liste dépliable des parties terminées (30 derniers jours), affichée sur l'accueil. */
+/** Liste dépliable des parties terminées récentes, affichée sur l'accueil. */
 export default function HistoryList() {
   const {
     history, historyDetails, loadHistory, loadHistoryGame, myPlayerId,
@@ -104,7 +105,7 @@ export default function HistoryList() {
   if (history.length === 0) {
     return (
       <div className="space-y-3">
-        <div className="card p-6 text-center opacity-70">Aucune partie terminée ces 30 derniers jours.</div>
+        <div className="card p-6 text-center opacity-70">Aucune partie terminée ces {HISTORY_RETENTION_DAYS} derniers jours.</div>
         {adminBar}
       </div>
     );
@@ -115,7 +116,7 @@ export default function HistoryList() {
       {history.map(g => {
         const played = g.players.some(p => p.id === myPlayerId);
         const winner = g.players.find(p => !p.surrendered) ?? g.players[0];
-        const daysLeft = Math.max(0, Math.ceil((new Date(g.finishedAt).getTime() + 30 * DAY_MS - Date.now()) / DAY_MS));
+        const daysLeft = Math.max(0, Math.ceil((new Date(g.expiresAt).getTime() - Date.now()) / DAY_MS));
         const isOpen = openId === g.id;
         const details = historyDetails[g.id]; // absent = en chargement, null = introuvable
 
@@ -166,7 +167,7 @@ export default function HistoryList() {
                 )}
                 {details === null && (
                   <div className="text-center text-sm opacity-60 py-2">
-                    Partie introuvable — elle a peut-être dépassé les 30 jours.
+                    Partie introuvable — elle a peut-être dépassé les {HISTORY_RETENTION_DAYS} jours.
                   </div>
                 )}
                 {details && <HistoryDetails entry={details} />}

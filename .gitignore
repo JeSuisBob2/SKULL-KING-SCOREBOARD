@@ -18,6 +18,9 @@ skullking-save.json
 skullking-save.json.tmp
 skullking-history.json
 skullking-history.json.tmp
+skullking-career.json
+skullking-career.json.tmp
+skullking-career.json.illisible-*
 
 # Éditeurs
 .vscode/

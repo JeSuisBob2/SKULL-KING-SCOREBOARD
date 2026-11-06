@@ -4,6 +4,8 @@
 
 import { networkInterfaces } from 'os';
 import { writeFileSync, renameSync, readFileSync, existsSync } from 'fs';
+import { HISTORY_RETENTION_DAYS } from './src/config/history';
+import { toCareerGame, computeStats, type CareerGame } from './src/lib/careerStats';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +30,7 @@ interface Room {
   players: RoomPlayer[];
   created_at: string;
   updated_at: string;
+  noArchive?: boolean;   // partie supprimée par l'admin : ne plus jamais l'archiver
 }
 
 interface Bid {
@@ -196,10 +199,11 @@ function scheduleSave() {
     saveTimer = null;
     saveSnapshot();
     if (historyDirty) saveHistory();
+    if (careerDirty) saveCareer();
   }, 800);
 }
 
-// ─── Historique des parties terminées (conservé 30 jours) ─────────────────────
+// ─── Historique des parties terminées (durée : src/config/history.ts) ─────────
 // Fichier séparé de la sauvegarde des parties en cours : fermer une salle
 // n'efface plus la partie de l'historique.
 
@@ -214,7 +218,7 @@ interface HistoryEntry {
 }
 
 const HISTORY_FILE = process.env.SK_HISTORY_FILE ?? './skullking-history.json';
-const HISTORY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const HISTORY_TTL_MS = HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 let history: HistoryEntry[] = [];
 let historyDirty = false;
 
@@ -229,7 +233,7 @@ function saveHistory() {
   }
 }
 
-/** Supprime les parties terminées depuis plus de 30 jours. Retourne le nombre supprimé. */
+/** Supprime les parties terminées depuis plus que la durée de conservation. Retourne le nombre supprimé. */
 function purgeHistory(): number {
   const limit = Date.now() - HISTORY_TTL_MS;
   const before = history.length;
@@ -237,7 +241,7 @@ function purgeHistory(): number {
   const removed = before - history.length;
   if (removed > 0) {
     historyDirty = true;
-    log(`[history] ${removed} partie(s) de plus de 30 jours supprimée(s)`);
+    log(`[history] ${removed} partie(s) de plus de ${HISTORY_RETENTION_DAYS} jours supprimée(s)`);
   }
   return removed;
 }
@@ -260,6 +264,7 @@ function loadHistory() {
  * salle 'complete', pour que les corrections de l'hôte après la fin soient prises en compte.
  */
 function archiveGame(room: Room) {
+  if (room.noArchive) return;
   const id = `${room.code}-${room.created_at}`;
   const existing = history.find(e => e.id === id);
   const entry: HistoryEntry = {
@@ -277,6 +282,64 @@ function archiveGame(room: Room) {
     log(`[history] partie ${room.code} archivée`);
   }
   historyDirty = true;
+
+  // Résumé permanent pour les stats de carrière (survit à la purge de l'historique)
+  upsertCareer(toCareerGame(entry));
+}
+
+// ─── Stats de carrière (résumés permanents, jamais purgés) ────────────────────
+// L'historique détaillé est supprimé au bout de HISTORY_RETENTION_DAYS jours. Chaque partie
+// terminée est aussi résumée, en plus compact, dans skullking-career.json, conservé pour
+// toujours : c'est de là que sont calculées les statistiques des joueurs.
+
+const CAREER_FILE = process.env.SK_CAREER_FILE ?? './skullking-career.json';
+let career: CareerGame[] = [];
+let careerDirty = false;
+
+function saveCareer() {
+  try {
+    const tmp = CAREER_FILE + '.tmp';
+    writeFileSync(tmp, JSON.stringify(career));
+    renameSync(tmp, CAREER_FILE); // écriture atomique, comme l'historique
+    careerDirty = false;
+  } catch (e) {
+    log('[career] échec de la sauvegarde :', e);
+  }
+}
+
+/** Ajoute ou met à jour le résumé d'une partie (une correction après la fin le remplace). */
+function upsertCareer(game: CareerGame) {
+  const i = career.findIndex(g => g.id === game.id);
+  if (i >= 0) career[i] = game;
+  else career.push(game);
+  careerDirty = true;
+}
+
+/**
+ * Charge les résumés permanents, puis y ajoute les parties de l'historique qui n'y sont
+ * pas encore (au premier lancement : toutes celles encore présentes dans l'historique).
+ */
+function loadCareer() {
+  try {
+    if (existsSync(CAREER_FILE)) {
+      const parsed = JSON.parse(readFileSync(CAREER_FILE, 'utf8'));
+      if (Array.isArray(parsed)) career = parsed;
+    }
+  } catch (e) {
+    // Fichier illisible : on le met de côté au lieu de l'écraser. Il contient peut-être
+    // des parties qui ne sont plus dans l'historique, impossibles à reconstruire.
+    const backup = `${CAREER_FILE}.illisible-${Date.now()}`;
+    try { renameSync(CAREER_FILE, backup); } catch {}
+    log(`[career] fichier illisible, mis de côté sous ${backup} :`, e);
+  }
+  const known = new Set(career.map(g => g.id));
+  const missing = history.filter(e => !known.has(e.id));
+  for (const e of missing) career.push(toCareerGame(e));
+  if (missing.length) {
+    saveCareer();
+    log(`[career] ${missing.length} partie(s) ajoutée(s) aux stats de carrière`);
+  }
+  log(`[career] ${career.length} partie(s) dans les stats de carrière`);
 }
 
 /** Résumé léger pour la liste (évite d'envoyer tous les paris et résultats). */
@@ -287,7 +350,8 @@ function summarizeHistory(e: HistoryEntry) {
   const players = e.room.players
     .map(p => ({ id: p.id, name: p.name, surrendered: !!p.surrendered, total: totalFor(p.id) }))
     .sort((a, b) => b.total - a.total);
-  return { id: e.id, code: e.room.code, finishedAt: e.finishedAt, totalRounds: e.room.total_rounds, players };
+  const expiresAt = new Date(new Date(e.finishedAt).getTime() + HISTORY_TTL_MS).toISOString();
+  return { id: e.id, code: e.room.code, finishedAt: e.finishedAt, expiresAt, totalRounds: e.room.total_rounds, players };
 }
 
 /** Liste de l'historique, triée de la plus récente à la plus ancienne. */
@@ -540,7 +604,7 @@ function handleMessage(ws: any, raw: string) {
       break;
     }
 
-    // ── Historique des parties terminées (30 derniers jours) ────────────────
+    // ── Historique des parties terminées ────────────────────────────────────
     case 'get-history': {
       sendJson(ws, { type: 'history-list', entries: historyList() });
       break;
@@ -549,6 +613,12 @@ function handleMessage(ws: any, raw: string) {
     case 'get-history-game': {
       const entry = history.find(e => e.id === msg.gameId) ?? null;
       try { ws.send(JSON.stringify({ type: 'history-game', gameId: msg.gameId, entry })); } catch {}
+      break;
+    }
+
+    // ── Statistiques des joueurs (calculées sur les résumés permanents) ─────
+    case 'get-stats': {
+      sendJson(ws, { type: 'stats', stats: computeStats(career) });
       break;
     }
 
@@ -617,6 +687,17 @@ function handleMessage(ws: any, raw: string) {
         saveHistory();
         log(`[admin] partie ${gameId} supprimée de l'historique`);
       }
+      // Si sa salle est encore ouverte, elle se réarchiverait à la prochaine mise à jour
+      // (joueur qui se déconnecte, reconnexion...) : on la marque pour l'en empêcher.
+      for (const room of rooms.values()) {
+        if (`${room.code}-${room.created_at}` === gameId) room.noArchive = true;
+      }
+      scheduleSave(); // la marque est enregistrée avec la salle (survit à un redémarrage)
+
+      // Une partie supprimée (partie de test, erreur...) sort aussi des stats de carrière
+      const careerBefore = career.length;
+      career = career.filter(g => g.id !== gameId);
+      if (career.length < careerBefore) saveCareer();
       sendJson(ws, { type: 'history-list', entries: historyList() });
       break;
     }
@@ -1484,9 +1565,12 @@ if (BASE) log(`[server] base détectée : "${BASE}"`);
 // Recharge les parties en cours depuis le disque (reprise après coupure/redémarrage).
 loadSnapshot();
 
-// Historique : chargement + purge des parties de plus de 30 jours, puis une fois par jour.
+// Historique : chargement + purge des parties trop anciennes, puis une fois par jour.
 loadHistory();
 setInterval(() => { if (purgeHistory() > 0) saveHistory(); }, 24 * 60 * 60 * 1000);
+
+// Stats de carrière : chargement + rattrapage des parties de l'historique (après loadHistory)
+loadCareer();
 
 if (ADMIN_PASSWORD_HASH) {
   log('[admin] accès admin activé');
@@ -1507,6 +1591,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     log(`[exit] ${sig} reçu — sauvegarde finale...`);
     saveSnapshot();
     saveHistory();
+    saveCareer();
     process.exit(0);
   });
 }

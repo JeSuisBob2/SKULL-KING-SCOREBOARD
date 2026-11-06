@@ -12,6 +12,7 @@ import RoomLobby from './routes/RoomLobby';
 import RoomBets from './routes/RoomBets';
 import RoomResults from './routes/RoomResults';
 import Rules from './routes/Rules';
+import PlayerPage from './routes/PlayerPage';
 import { useRoomStore } from './store/useRoomStore';
 
 function RoomAutoReconnect() {
@@ -74,6 +75,7 @@ export default function App() {
       <Route path="/room/:roomId/round/:roundNumber/bets" element={<RoomBets />} />
       <Route path="/room/:roomId/round/:roundNumber/results" element={<RoomResults />} />
 
+      <Route path="/player/:key" element={<PlayerPage />} />
       <Route path="/rules" element={<Rules />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
