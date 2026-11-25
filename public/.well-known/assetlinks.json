@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "fr.jesuisbob.skullking.twa",
+    "sha256_cert_fingerprints": ["0F:B6:5E:18:69:99:86:E1:BC:69:1E:69:94:02:75:00:ED:F3:E0:66:4B:47:CA:D4:B6:BC:C4:BA:7E:00:56:B3"]
+  }
+}]

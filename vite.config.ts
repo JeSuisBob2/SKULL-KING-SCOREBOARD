@@ -30,12 +30,19 @@ export default defineConfig({
       manifest: {
         name: 'Skull King Scorekeeper',
         short_name: 'Skull King',
-        description: 'Track scores for the Skull King card game',
+        description: 'Le compteur de points de vos parties de Skull King',
+        lang: 'fr',
         theme_color: '#1c2541',
         background_color: '#0b132b',
         display: 'standalone',
         categories: ['games', 'entertainment'],
+        // Chaque icône est déclarée deux fois : « any » (icône standard, exigée par Android
+        // pour proposer l'installation) et « maskable » (découpée en rond, en carré arrondi...
+        // selon le téléphone ; le dessin garde l'essentiel dans la zone de sécurité centrale).
+        // Source du dessin : design/icon.svg
         icons: [
+          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
